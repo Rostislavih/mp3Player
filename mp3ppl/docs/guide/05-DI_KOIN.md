@@ -59,9 +59,12 @@ composeApp/src/androidMain/kotlin/org/example/mp3player/
 
 ### Шаг 1 — Зависимости
 
-`gradle/libs.versions.toml`:
+Koin делится на артефакты: `koin-core` (ядро, KMP), `koin-android` (расширения с `Context`/`Application`), `koin-compose` (получение зависимостей в `@Composable`), `koin-compose-viewmodel` (factory для ViewModel в Compose).
+
+Добавляем версии и артефакты:
 
 ```toml
+# gradle/libs.versions.toml
 [versions]
 koin = "4.2.0-RC1"
 
@@ -72,8 +75,10 @@ koin-compose-viewmodel = { group = "io.insert-koin", name = "koin-compose-viewmo
 koin-compose = { group = "io.insert-koin", name = "koin-compose", version.ref = "koin" }
 ```
 
-`shared/data/build.gradle.kts`:
+Подключаем по модулям — в `data` (ядро + Android-расширения):
+
 ```kotlin
+// shared/data/build.gradle.kts
 commonMain.dependencies {
     implementation(libs.koin.core)
 }
@@ -82,8 +87,10 @@ androidMain.dependencies {
 }
 ```
 
-`shared/presentation/build.gradle.kts`:
+В `presentation` (ядро + Compose-обёртки):
+
 ```kotlin
+// shared/presentation/build.gradle.kts
 commonMain.dependencies {
     implementation(libs.koin.core)
     implementation(libs.koin.compose)
@@ -91,14 +98,18 @@ commonMain.dependencies {
 }
 ```
 
-`composeApp/build.gradle.kts`:
+В `composeApp` (для `startKoin` в Application):
+
 ```kotlin
+// composeApp/build.gradle.kts
 androidMain.dependencies {
     implementation(libs.koin.android)
 }
 ```
 
 ### Шаг 2 — Data-модуль (common-часть)
+
+Модули Koin — это «инструкции по сборке зависимостей». Создаём общую часть data-модуля: репозитории `TracksRepositoryImpl` и `AlbumsRepositoryImpl`, у которых нет platform-specific зависимостей.
 
 ```kotlin
 // shared/data/src/commonMain/kotlin/org/example/mp3player/data/di/DataModule.kt
@@ -122,7 +133,49 @@ val dataModule = module {
 }
 ```
 
+**`module { ... }` — что это.** Функция из `org.koin.dsl`:
+
+```kotlin
+fun module(createdAtStart: Boolean = false, moduleDeclaration: ModuleDeclaration): Module
+```
+
+`ModuleDeclaration` — это `Module.() -> Unit`, **лямбда, внутри которой `this` это `Module`**. Поэтому когда пишешь `singleOf(...)` — это эквивалентно `this.singleOf(...)`, где `this` это `Module`. Внутри блока доступны все методы: `single`, `factory`, `viewModel`, `singleOf`, `viewModelOf`. Это и называется **DSL** — domain-specific language через лямбды с receiver.
+
+`module` возвращает объект, в котором собраны все «определения» (`Definition` — каждый описывает «как создать X»). При `startKoin { modules(dataModule, ...) }` определения собираются в один граф.
+
+**`single` vs `factory` vs `viewModel`** — три типа жизненного цикла:
+
+| Scope | Поведение | Когда использовать |
+|-------|-----------|--------------------|
+| `single` | Создаётся один раз, кешируется навсегда | `AppDatabase`, `AudioPlayer`, репозитории |
+| `factory` | Новый экземпляр на каждый `get()` | Stateful-объекты короткого времени жизни |
+| `viewModel` | Один на жизненный цикл Compose-дестинации/Activity | ViewModel-ы |
+
+Репозитории — `single`, потому что у них есть внутреннее состояние (`_tracks: MutableStateFlow`), которое должно быть **общим** для всего приложения. Если бы каждый ViewModel получал свой экземпляр `TracksRepositoryImpl`, они бы не знали друг про друга.
+
+**`singleOf(::X) { bind<Y>() }`** — главная идиома Koin для DI через конструктор:
+
+`::TracksRepositoryImpl` — это **constructor-reference**. В Kotlin `::ClassName` означает «дай мне ссылку на конструктор класса». Тип такого выражения — соответствующая `KFunctionN`, где N — количество параметров конструктора.
+
+`singleOf` принимает constructor-reference и **сам вызывает `get()` для каждого параметра**:
+
+```kotlin
+// Вручную (полная форма):
+single<TracksRepository> { TracksRepositoryImpl(get()) }
+
+// Через singleOf — Koin сам разрешает параметры:
+singleOf(::TracksRepositoryImpl) { bind<TracksRepository>() }
+```
+
+«Сам разрешает» — это не рефлексия в рантайме (это было бы медленно). Под капотом у `singleOf` несколько перегрузок для конструкторов с 1, 2, 3, ... параметров. Компилятор Kotlin выбирает нужную перегрузку по типу `KFunctionN`. На рантайме просто вызов через function reference — почти бесплатно.
+
+Преимущество: если конструктор изменится (добавится новая зависимость), `singleOf` **автоматически** подставит её через `get()`. Не надо обновлять модуль вручную.
+
+`{ bind<TracksRepository>() }` — блок «опций»: «зарегистрируй ЭТОТ же объект ещё под этим типом». Без него `get<TracksRepository>()` не нашёл бы реализацию — Koin искал бы зарегистрированный тип, а зарегистрирован `TracksRepositoryImpl`, не интерфейс.
+
 ### Шаг 3 — Android-специфичная часть
+
+В Android-таргете живут зависимости с `Context`: Room, `MusicScanner`, `AudioPlayer`.
 
 ```kotlin
 // shared/data/src/androidMain/kotlin/org/example/mp3player/data/di/AndroidDataModule.kt
@@ -150,9 +203,39 @@ val androidDataModule = module {
 }
 ```
 
-`androidContext()` — хелпер Koin-Android. Возвращает `Context`, который мы передали при `startKoin`.
+Тут несколько важных деталей.
+
+**`androidContext()` — где он живёт.** Технически Koin (`koin-core`) не знает, что такое `Context` — это Android-понятие. Артефакт `koin-android` добавляет:
+
+1. **DSL-функцию `androidContext(app: Application)`** в блок `startKoin { ... }`. Она регистрирует переданное `app` (т.е. `Context`) как синглтон в Koin.
+2. **DSL-функцию `androidContext()` в `Module`-scope**. Она достаёт зарегистрированный `Context` через `get<Context>()`.
+
+Без шага 1 (в `App.onCreate` — см. Шаг 6) при попытке достать `androidContext()` в модуле будет `NoDefinitionFoundException: No definition found for class:'Context'`.
+
+**`single { ... }` — это lazy.** Деталь, которую часто пропускают: при `startKoin` Koin **не создаёт** ни одного объекта. Лямбда внутри `single { ... }` выполнится **только при первом вызове `get<Type>()`** (или транзитивно — когда другая зависимость попросит этот тип).
+
+Это значит:
+- `startKoin` дешёвый — он только регистрирует определения.
+- `single { AppDatabase.build(androidContext()) }` — БД не открывается при старте, она откроется при первом `dao.observeAll()`.
+- Можешь регистрировать «дорогие» зависимости в большом модуле и не платить за них, пока не нужны.
+
+После первого создания результат **кешируется**: каждый последующий `get()` вернёт тот же объект (поэтому `AudioPlayer` действительно один на приложение).
+
+**`get()` внутри блока `single { ... }`** — «возьми зависимость этого типа». Тип вычисляется через **reified type parameter**: компилятор по контексту понимает, какой `Type` нужен.
+
+```kotlin
+single { AudioPlayer(get()) }
+```
+
+`AudioPlayer` принимает `Context`, поэтому `get()` тут разрешится как `get<Context>()`. Компилятор видит сигнатуру конструктора и подставляет правильный тип.
+
+Если зависимость не зарегистрирована — `NoDefinitionFoundException` при первом запросе. Чтобы поймать это раньше, в unit-тесте можно прогнать `checkKoinModules()` — он проверит весь граф.
+
+**`single<UserAlbumsDao> { get<AppDatabase>().userAlbumsDao() }`** — пример «достать зависимость через другую». Сначала Koin создаст `AppDatabase` (если ещё не создан), потом вызовет на нём `userAlbumsDao()` и закеширует результат. Так Room-DAO становится DI-зависимостью, не зная про сам Room.
 
 ### Шаг 4 — iOS-заглушка
+
+Симметрично Android-модулю — для iOS-таргета.
 
 ```kotlin
 // shared/data/src/iosMain/kotlin/org/example/mp3player/data/di/IosDataModule.kt
@@ -169,7 +252,11 @@ val iosDataModule = module {
 }
 ```
 
+Конструкторы без параметров — у iOS-`actual` нет `Context`. `UserAlbumsRepositoryImpl` пропущен: на iOS его реализация будет через что-то другое (Core Data / SQLDelight), мы пока этим не занимаемся.
+
 ### Шаг 5 — Presentation-модуль
+
+Регистрируем все ViewModel'и. Это `commonMain` — KMP-модуль, никакой Android-специфики.
 
 ```kotlin
 // shared/presentation/src/commonMain/kotlin/org/example/mp3player/presentation/di/PresentationModule.kt
@@ -192,9 +279,13 @@ val presentationModule = module {
 }
 ```
 
-ViewModels — в следующем файле, пока просто зарегистрировали.
+`viewModelOf(::X)` — то же что `singleOf(::X)`, но с другим scope: один экземпляр на жизненный цикл Compose-дестинации (или Activity). Когда дестинация уходит со стека — `onCleared()` ViewModel вызывается, экземпляр освобождается.
+
+Сами ViewModel'и пока не написаны — это следующий этап (`06-VIEWMODELS_AND_STATE.md`). Регистрируем их заранее, чтобы DI-граф был готов.
 
 ### Шаг 6 — Application + startKoin
+
+Точка входа для Koin — `Application.onCreate()`. Это место, куда Android отдаёт управление при старте процесса, до создания любой Activity.
 
 ```kotlin
 // composeApp/src/androidMain/kotlin/org/example/mp3player/App.kt
@@ -225,15 +316,32 @@ class App : Application() {
 }
 ```
 
-Зарегистрировать `App` в манифесте:
+Регистрируем `App` в манифесте, чтобы Android знал использовать его вместо дефолтного `Application`:
 
 ```xml
+<!-- composeApp/src/androidMain/AndroidManifest.xml -->
 <application
     android:name="org.example.mp3player.App"
     ...>
 ```
 
+**Что физически делает `startKoin { ... }`.** Создаёт `KoinApplication` (контейнер настроек) и `Koin` (рантайм с графом зависимостей). После выполнения:
+- В глобальной точке (через `GlobalContext`) лежит ссылка на текущий `Koin`.
+- Все определения из переданных модулей зарегистрированы в графе.
+- Никаких объектов ещё не создано (single — lazy, см. Шаг 3).
+
+Дальше в любом месте приложения:
+- `getKoin().get<Type>()` — достать зависимость напрямую.
+- `class X : KoinComponent { val y: Y by inject() }` — через делегат `inject`.
+- В Compose — `koinViewModel()` (Шаг 7).
+
+`startKoin` нельзя вызывать дважды в одном процессе — упадёт с `KoinAppAlreadyStartedException`. Поэтому стандартное место — `Application.onCreate()`, который Android вызывает один раз при старте процесса.
+
+`androidLogger(Level.INFO)` — Koin будет логировать создание зависимостей. В проде заменишь на `Level.NONE`, чтобы не засорять logcat.
+
 ### Шаг 7 — Использование в Compose
+
+Получаем ViewModel из Koin прямо в Composable через `koinViewModel()`:
 
 ```kotlin
 // shared/presentation/src/commonMain/kotlin/org/example/mp3player/presentation/tracks/TracksScreen.kt
@@ -254,7 +362,41 @@ fun TracksScreen(
 }
 ```
 
-Вот и всё. Koin сам создаст `TracksViewModel`, подставит туда `TracksRepository`, `AudioPlayer`, что бы ни потребовалось в конструкторе.
+Koin сам создаёт `TracksViewModel`, подставит туда `TracksRepository`, `AudioPlayer` — что бы ни потребовалось в конструкторе.
+
+**`koinViewModel()` vs `viewModel()`.** `koinViewModel()` (из `koin-compose-viewmodel`) — обёртка над `viewModel()` из Compose:
+
+```kotlin
+@Composable
+inline fun <reified T : ViewModel> koinViewModel(...): T {
+    return viewModel<T>(factory = KoinViewModelFactory(...))
+}
+```
+
+Использует стандартный механизм Compose + Lifecycle, но передаёт ему **factory из Koin**. Factory знает, как через граф зависимостей собрать ViewModel: для каждого параметра конструктора зовёт `get()`.
+
+«Один на дестинацию» означает: `viewModel()` использует `ViewModelStore` текущего `LocalViewModelStoreOwner`. В навигационных компонентах эта область — `NavBackStackEntry` (для `composable<...>`) или Activity. Пока область жива — ViewModel живёт. Уходит — `onCleared()`.
+
+Если случайно использовать `viewModel()` (без `koin`) с ViewModel'ом, имеющим непустой конструктор — `RuntimeException: Cannot create an instance of class TracksViewModel`. Compose сам не знает, как собирать аргументы; нужна factory. `koinViewModel()` это и решает.
+
+**Почему конструктор-инъекция, а не field-инъекция.** Koin поддерживает оба варианта:
+
+```kotlin
+// Конструктор-инъекция (рекомендуется):
+class TracksViewModel(private val repo: TracksRepository) : ViewModel() { ... }
+
+// Field-инъекция через KoinComponent:
+class TracksViewModel : ViewModel(), KoinComponent {
+    private val repo: TracksRepository by inject()
+}
+```
+
+Конструктор лучше потому, что:
+1. **Тестируемость.** В тесте создаёшь `TracksViewModel(FakeRepository())` — никакого Koin не нужно. С field-инъекцией пришлось бы стартовать Koin в тесте.
+2. **Явность.** По конструктору видно, что нужно классу. Field-инъекция «прячет» зависимости.
+3. **Cycle detection.** Если A нужен B, B нужен A — конструкторная инъекция упадёт сразу при `singleOf`. Field — runtime.
+
+Field-инъекция через `KoinComponent` оставлена для случаев, когда конструктор недоступен (Android-системные классы вроде `BroadcastReceiver`, которые Android создаёт сам).
 
 ### Шаг 8 — Вызов из не-Composable мест
 
@@ -274,229 +416,9 @@ class SomeHelper : KoinComponent {
 }
 ```
 
-Но **в ViewModel инжекть через конструктор**, не через `inject()`. Конструктор — чище, тестируемее.
+Но **в ViewModel инжекть через конструктор**, не через `inject()` — см. объяснение в Шаге 7.
 
----
-
-## Разбор
-
-### `module { ... }` — что это вообще
-
-`module` — это функция из `org.koin.dsl`, принимающая лямбду с receiver `Module`:
-
-```kotlin
-fun module(createdAtStart: Boolean = false, moduleDeclaration: ModuleDeclaration): Module
-```
-
-`ModuleDeclaration` — это `Module.() -> Unit`, то есть **лямбда, внутри которой `this` это `Module`**. Поэтому когда ты пишешь:
-
-```kotlin
-val dataModule = module {
-    singleOf(::TracksRepositoryImpl) { bind<TracksRepository>() }
-}
-```
-
-это эквивалентно:
-
-```kotlin
-val dataModule = module {
-    this.singleOf(...)   // this = Module
-}
-```
-
-Внутри блока тебе доступны все методы `Module`: `single`, `factory`, `viewModel`, `singleOf`, `viewModelOf` и т.д. Это и называется **DSL** — domain-specific language через лямбды с receiver.
-
-Возвращает `module` объект, в котором собраны все «определения» (`Definition`-объекты — каждый описывает «как создать X»). При `startKoin { modules(dataModule, ...) }` все эти определения собираются в один граф.
-
-### `single` vs `factory` vs `viewModel`
-
-| Scope | Поведение | Когда использовать |
-|-------|-----------|--------------------|
-| `single` | Создаётся один раз, кешируется навсегда | `AppDatabase`, `AudioPlayer`, репозитории |
-| `factory` | Новый экземпляр на каждый `get()` | Stateful-объекты короткого времени жизни |
-| `viewModel` | Один на жизненный цикл Compose-дестинации/Activity | ViewModel-ы |
-
-`AudioPlayer` — `single`, потому что плеер один на приложение. Две разные "копии" конфликтовали бы за `MediaController`.
-
-#### `single { ... }` — это lazy
-
-Важная деталь, которую часто пропускают: при `startKoin` Koin **не создаёт** ни одного объекта. Лямбда внутри `single { ... }` выполнится **только при первом вызове `get<Type>()`** (или транзитивно — когда другая зависимость попросит этот тип).
-
-Это значит:
-- `startKoin` дешёвый — он только регистрирует определения, реально ничего не строит.
-- Если у тебя `single { AppDatabase.build(androidContext()) }` — БД не открывается при старте приложения, она откроется при первом `dao.observeAll()`.
-- Можешь регистрировать «дорогие» зависимости в большом модуле и не платить за них, пока не нужны.
-
-После первого создания результат **кешируется**: каждый последующий `get()` вернёт тот же объект (поэтому `AudioPlayer` действительно один на приложение).
-
-`createdAtStart = true` (опция модуля или конкретного `single`) меняет поведение на «создать сразу при `startKoin`». Используется редко — для зависимостей, которые должны зарегистрировать что-то в системе как побочный эффект (например, инициализация Crashlytics).
-
-### `singleOf(::X) { bind<Y>() }` — где здесь магия
-
-```kotlin
-singleOf(::TracksRepositoryImpl) { bind<TracksRepository>() }
-```
-
-`::TracksRepositoryImpl` — это **constructor-reference**. В Kotlin `::ClassName` означает «дай мне ссылку на конструктор класса». Тип такого выражения — соответствующая `KFunctionN`, где N — количество параметров конструктора.
-
-`singleOf` принимает constructor-reference и **сам вызывает `get()` для каждого параметра**:
-
-```kotlin
-// Вручную:
-single<TracksRepository> { TracksRepositoryImpl(get()) }
-
-// Через singleOf — Koin сам разрешает параметры:
-singleOf(::TracksRepositoryImpl) { bind<TracksRepository>() }
-```
-
-«Сам разрешает» — это не рефлексия в рантайме (это было бы медленно). Под капотом у `singleOf` есть несколько перегрузок для конструкторов с 1, 2, 3, ... параметров. Компилятор Kotlin выбирает нужную перегрузку по типу `KFunctionN`. На рантайме просто вызов через function reference — почти бесплатно.
-
-Преимущество: если конструктор изменится (добавится новая зависимость), `singleOf` **автоматически** подставит её через `get()`. Не надо помнить про каждый ручной `single { ... }` и обновлять вручную.
-
-`{ bind<TracksRepository>() }` — отдельный блок «опций»: «зарегистрируй ЭТОТ же объект ещё под этим типом». Без него `get<TracksRepository>()` не нашёл бы реализацию — Koin искал бы зарегистрированный тип, а зарегистрировано `TracksRepositoryImpl`, а не интерфейс.
-
-### `get()`
-
-Внутри блока `single { ... }` вызов `get<Type>()` — "возьми зависимость этого типа". Тип вычисляется через **reified type parameter**: компилятор по контексту понимает, какой `Type` нужен. Например:
-
-```kotlin
-single { AudioPlayer(get()) }
-```
-
-`AudioPlayer` принимает `Context`, поэтому `get()` тут разрешится как `get<Context>()`. Компилятор видит сигнатуру конструктора и подставляет правильный тип.
-
-Если зависимость не зарегистрирована — `NoDefinitionFoundException` при первом запросе (или при `checkModules()` в тесте).
-
-### Что мешает "забыть" что-то зарегистрировать?
-
-Koin сам не проверяет граф зависимостей на этапе сборки. Но есть `checkModules()`:
-```kotlin
-fun main() {
-    startKoin { modules(dataModule, presentationModule) }.checkKoinModules()
-}
-```
-— в unit-тесте прогоняет все определения и падает, если чего-то не хватает.
-
-Hilt/Dagger делают это на этапе компиляции (плюс генерации), Koin — в рантайме через тест.
-
-### `androidContext()` — где он живёт
-
-Технически Koin (артефакт `koin-core`) не знает, что такое `Context`. Это Android-понятие.
-
-Артефакт `koin-android` добавляет:
-1. **DSL-функцию `androidContext(app: Application)`** в блок `startKoin { ... }`. Она регистрирует переданное `app` (т.е. `Context`) как синглтон в Koin.
-2. **DSL-функцию `androidContext()` в `Module`-scope**. Она достаёт зарегистрированный `Context` через `get<Context>()`.
-
-То есть «протокол»:
-
-```kotlin
-// 1. При старте — кладём Context в граф:
-startKoin {
-    androidContext(this@App)   // ← регистрирует Context
-    modules(...)
-}
-
-// 2. В модулях — достаём:
-val androidDataModule = module {
-    single { MusicScanner(androidContext()) }   // ← достаёт зарегистрированный Context
-}
-```
-
-Без шага 1 в шаге 2 будет `NoDefinitionFoundException: No definition found for class:'Context'`.
-
-### `startKoin { ... }` — что физически происходит
-
-```kotlin
-class App : Application() {
-    override fun onCreate() {
-        super.onCreate()
-        startKoin {
-            androidContext(this@App)
-            modules(dataModule, androidDataModule, presentationModule)
-        }
-    }
-}
-```
-
-`startKoin` создаёт `KoinApplication` (контейнер настроек) и `Koin` (рантайм с графом зависимостей). После выполнения:
-- В глобальной точке (через `GlobalContext` объект) лежит ссылка на текущий `Koin`.
-- Все определения из переданных модулей зарегистрированы в графе.
-- Никаких объектов ещё не создано (single — lazy).
-
-Дальше в любом месте приложения:
-- `getKoin().get<Type>()` — достать зависимость напрямую.
-- `class X : KoinComponent { val y: Y by inject() }` — через делегат `inject`.
-- В Compose — `koinViewModel()`.
-
-`startKoin` нельзя вызывать дважды в одном процессе — упадёт с `KoinAppAlreadyStartedException`. Поэтому стандартное место — `Application.onCreate()`, который Android вызывает один раз при старте процесса.
-
-### `koinViewModel()` vs `viewModel()`
-
-`koinViewModel()` (из `koin-compose-viewmodel`) — это обёртка над `viewModel()` из Compose. Под капотом:
-
-```kotlin
-@Composable
-inline fun <reified T : ViewModel> koinViewModel(...): T {
-    return viewModel<T>(factory = KoinViewModelFactory(...))
-}
-```
-
-То есть он использует стандартный механизм Compose + Lifecycle (`androidx.lifecycle.viewmodel.compose.viewModel`), но передаёт ему **factory из Koin**. Factory знает, как через граф зависимостей собрать ViewModel: для каждого параметра конструктора зовёт `get()`.
-
-Что значит «один на дестинацию»: `viewModel()` использует `ViewModelStore` текущего `LocalViewModelStoreOwner`. В навигационных компонентах эта область — `NavBackStackEntry` (для `composable<...>`) или Activity. Пока эта область жива, ViewModel живёт. Когда область умирает (свайп с экрана, выход с дестинации) — `onCleared()` вызывается, ViewModel освобождается.
-
-Если случайно использовать `viewModel()` (без `koin`) с ViewModel'ом, имеющим непустой конструктор — `RuntimeException: Cannot create an instance of class TracksViewModel`. Compose сам не знает, как собирать аргументы; нужна factory. `koinViewModel()` это и решает.
-
-### Почему конструктор-инъекция, а не field-инъекция
-
-Koin поддерживает оба варианта:
-
-```kotlin
-// Конструктор-инъекция (рекомендуется):
-class TracksViewModel(private val repo: TracksRepository) : ViewModel() { ... }
-
-// Field-инъекция через KoinComponent:
-class TracksViewModel : ViewModel(), KoinComponent {
-    private val repo: TracksRepository by inject()
-}
-```
-
-Конструктор лучше потому, что:
-
-1. **Тестируемость.** В тесте создаёшь `TracksViewModel(FakeRepository())` — никакого Koin не нужно. С field-инъекцией пришлось бы стартовать Koin в тесте (или мокать `KoinComponent`).
-2. **Явность.** По конструктору видно, что нужно классу. Field-инъекция «прячет» зависимости — посмотришь на конструктор, он пустой, но при инстанцировании магически подцепляются поля.
-3. **Compile-time safety.** Если конструктор требует `TracksRepository`, а его нет в графе — ошибка при сборке ViewModel. Field — runtime.
-4. **Цикличные зависимости видны раньше.** Если A нужен B, B нужен A — конструкторная инъекция упадёт сразу при `singleOf`. Field может «работать» до первого `inject()`.
-
-Field-инъекция через `KoinComponent` оставлена для случаев, когда конструктор недоступен (Android-системные классы вроде `BroadcastReceiver`, которые Android создаёт сам).
-
-### `runCatching` в onEvent — ловушка с `CancellationException`
-
-В файле 06 мы будем активно использовать `runCatching { ... }` для обработки ошибок в ViewModel. Здесь стоит дать предупреждение, потому что Koin часто используется с тем же паттерном.
-
-```kotlin
-runCatching { tracksRepository.refresh() }
-    .onSuccess { ... }
-    .onFailure { ... }
-```
-
-`runCatching` ловит **все** `Throwable`, включая `CancellationException`. Это — баг в корутинном коде.
-
-`CancellationException` — это сигнал «отмени корутину» (например, `viewModelScope` отменяется при `onCleared`). Этот сигнал должен **пробрасываться вверх**, иначе корутина не остановится. Если `runCatching` его перехватит и положит в `onFailure { it.message ?: "ошибка" }`, ты увидишь снэкбар «JobCancellation» каждый раз, когда юзер уходит с экрана во время загрузки.
-
-Правильный паттерн:
-
-```kotlin
-runCatching { tracksRepository.refresh() }
-    .onFailure { e -> if (e is CancellationException) throw e else _error.value = e.message }
-    .onSuccess { ... }
-```
-
-Или используй `try/catch` с явным `catch (e: Exception)` (он не ловит `CancellationException`, потому что `CancellationException` происходит от `Throwable`/`Error`-ветки в kotlinx.coroutines... на самом деле он `Exception`, но это исключительная договорённость).
-
-В стандартной библиотеке есть `runCatching`'оподобный helper для корутин, который сам пробрасывает `CancellationException`, но он не в kotlinx.coroutines, а нужно писать руками или взять из community-библиотек. Для гайда — помни про это сам.
-
-Подробнее в `06-VIEWMODELS_AND_STATE.md`, разделе про `runCatching`.
+> **Внимание про `runCatching` в обработке ошибок.** Когда будешь в `06-VIEWMODELS_AND_STATE.md` писать try/catch на корутинных вызовах через Koin — не используй `runCatching { ... }` без фильтра. Он ловит **все** `Throwable`, включая `CancellationException` (сигнал отмены корутины — `viewModelScope` отменяется при `onCleared`). Этот сигнал должен пробрасываться вверх. Правильный паттерн: `runCatching { ... }.onFailure { if (it is CancellationException) throw it else ... }`. Подробнее в файле 06.
 
 ---
 
