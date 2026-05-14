@@ -49,7 +49,16 @@ composeApp/src/androidMain/kotlin/org/example/mp3player/
 
 ### Шаг 1 — Зависимости
 
-`gradle/libs.versions.toml`:
+**Coil3 vs Coil2** — пакеты разные. Coil3 — полностью переписан под KMP; Coil2 был Android-only.
+
+| Coil2 | Coil3 |
+|---|---|
+| `io.coil-kt:coil-compose` | `io.coil-kt.coil3:coil-compose` |
+| `import coil.compose.AsyncImage` | `import coil3.compose.AsyncImage` |
+
+Будь осторожен с туториалами — если видишь `import coil.compose.AsyncImage` (без 3), это Coil2 и не подойдёт.
+
+Добавляем версии и артефакты:
 
 ```toml
 [versions]
@@ -112,6 +121,14 @@ fun createImageLoader(context: Context): ImageLoader = ImageLoader.Builder(conte
     .build()
 ```
 
+**Что такое `ImageLoader` и почему он один на приложение.** Это **главный объект Coil**. В нём живут memory-cache (LRU в RAM), disk-cache (LRU на диске), executor для загрузки, сетевые транспорты, декодеры форматов (PNG/JPEG/GIF/WebP/SVG). Один `ImageLoader` обслуживает все `AsyncImage` в приложении — если бы их было два, кэши дублировались бы. Один синглтон на процесс.
+
+**`MemoryCache.maxSizePercent(context, 0.25)`** — «возьми 25% от `Runtime.maxMemory()` приложения и не превышай». Численный пример: на обычном Android-устройстве `maxMemory` ~256 MB, 25% = **64 MB**. Coil сам ужимает обложки до размера `AsyncImage` (если в UI 56dp обложка, в кэш ляжет картинка 56dp, не оригинал 1024×1024), поэтому памяти хватает с запасом. При нехватке Coil выкидывает наименее используемые (LRU).
+
+**`crossfade(true)`** — при переходе из `Loading` в `Success` Coil анимирует `alpha` нового изображения от 0 до 1 за ~100 мс (старая картинка одновременно уходит в 0). Без — обновление мгновенное и «дёрганое». `crossfade(durationMillis = 200)` — настройка длительности.
+
+**`okio.Path` и `toOkioPath()`.** Coil3 не использует `java.io.File` напрямую — он использует `okio.Path` (Square Okio). Зачем: Coil3 это KMP-библиотека, на iOS нет `java.io.File`. Okio даёт единый Path-API, который маппится в `java.io.File` на JVM, в NSURL на iOS и т.п. `File.toOkioPath()` — extension из okio, конвертирующий `java.io.File` → `okio.Path`. На Android это просто обёртка вокруг абсолютного пути; для KMP-совместимости.
+
 ### Шаг 3 — Установка `ImageLoader` глобально
 
 ```kotlin
@@ -143,6 +160,20 @@ class App : Application() {
     }
 }
 ```
+
+**`SingletonImageLoader.setSafe { ... }` — лямбда-провайдер.** Сигнатура:
+
+```kotlin
+fun setSafe(factory: SingletonImageLoader.Factory)
+
+fun interface Factory {
+    fun newImageLoader(context: PlatformContext): ImageLoader
+}
+```
+
+`setSafe { ... }` принимает лямбду-фабрику. Она **НЕ вызывается сразу** — Coil сохраняет лямбду и вызывает её при первом обращении к глобальному ImageLoader (например, при первом `AsyncImage`). Lazy-инициализация: ImageLoader создаёт пулы потоков, открывает disk cache, читает индекс — несколько мс. Если пользователь не открывает экраны с картинками сразу — экономим эти мс на старте.
+
+`setSafe` vs `set`: `set(factory)` упадёт с `IllegalStateException`, если фабрика уже была установлена. `setSafe(factory)` тихо игнорирует повторный вызов — спасает при инструментальных тестах, где Application пересоздаётся.
 
 ### Шаг 4 — Обёртка `CoverImage`
 
@@ -224,6 +255,14 @@ CoverImage(
 )
 ```
 
+**`contentScale = ContentScale.Crop`** — картинка разного соотношения сторон не искажается, а кропается до квадрата. Для обложек — стандарт.
+
+**`MaterialTheme.colorScheme.surfaceVariant`** — один из «фоновых» цветов Material 3, чуть отличающийся от `surface`. Material рекомендует для «приподнятых» поверхностей (карточки, плейсхолдеры). Цвет адаптируется к light/dark теме автоматически. `MaterialTheme.colorScheme.*` доступен только внутри `@Composable` (это `CompositionLocal`) — нельзя сохранить в обычной константе.
+
+**Coil cache key — как Coil решает «грузить или взять из кэша».** Coil идентифицирует загрузку по **ключу**, который выводится из `model` (то, что ты передал в `AsyncImage`). Для `String` URL — ключ это сама строка; для `Uri` — `uri.toString()`; для `File` — абсолютный путь. Два разных `AsyncImage` с одинаковым `model` → один ключ → одна загрузка в фоне, оба получат результат.
+
+Подвох: если ты заменил содержимое файла (пользователь сменил обложку альбома, мы перезаписали `42.jpg`), но путь остался прежним — Coil **не узнает**, покажет старую закэшированную версию. Решение для нашего MVP — добавлять версию в URI при смене обложки: `path?v=1` → `path?v=2`. Coil увидит новый ключ → загрузит заново.
+
 ### Шаг 5 — `expect class CoverArtReader`
 
 Нужен для случаев, когда MediaStore не достал обложку (редко, но бывает — особенно для .flac и свежезаписанных файлов).
@@ -274,6 +313,14 @@ actual class CoverArtReader(private val context: Context) {
     }
 }
 ```
+
+**`MediaMetadataRetriever` — нативный объект.** Это Java-обёртка над **native C++ объектом**, который умеет парсить медиа-контейнеры (MP4, MP3, FLAC и т.д.). Native-часть держит file descriptor, буферы парсинга, декодеры. Это всё **не управляется GC**. Если потерял ссылку без `release()` — нативные ресурсы остаются. Через несколько сотен таких утечек — ANR, OOM, или система перестанет давать новые file descriptor.
+
+`try/finally` обязателен. Альтернатива — `.use { }` (с API 29 `MediaMetadataRetriever` реализует `AutoCloseable`).
+
+`embeddedPicture` читает байты обложки из метаданных. Возвращает `ByteArray?` (null если обложки нет). Внутри — парсинг ID3-тега для MP3, MP4 atoms для M4A, Vorbis comment для FLAC.
+
+Альтернатива — `MediaStore.Audio.Media.AlbumArt` (основной источник). Она быстрее, потому что MediaStore уже распарсил все треки при индексации. `MediaMetadataRetriever` используется как **fallback**, когда MediaStore по какой-то причине не нашёл обложку.
 
 ### Шаг 7 — iOS заглушка
 
@@ -338,7 +385,20 @@ actual class CoverArtStore(private val context: Context) {
 }
 ```
 
-**Почему `filesDir`, а не `cacheDir`?** `cacheDir` Android может чистить в любой момент, когда ему нужно место. `filesDir` — только при удалении приложения. Для пользовательских данных (они их не хотят терять) — `filesDir`.
+**Почему `filesDir`, а не `cacheDir`?** `cacheDir` Android может чистить в любой момент, когда ему нужно место — пользователь увидит свои альбомы без обложек, баг. `filesDir` — только при удалении приложения. Для пользовательских данных (треки физически лежат на устройстве, MediaStore их кэширует сам; пользовательские обложки — наши данные, система их не знает) — `filesDir`.
+
+**Чтение из URI: `context.contentResolver.openInputStream(uri)?.use { it.readBytes() }`** (понадобится при копировании обложки из галереи) содержит несколько идиом:
+
+1. `openInputStream(uri)` — возвращает `InputStream?` (null если URI невалидный или нет прав).
+2. `?.use { ... }` — safe call + `Closeable.use`. Если stream не null — открой блок, после блока (или при исключении) автоматически закрой.
+3. `it.readBytes()` — extension Kotlin, читает stream до конца, возвращает `ByteArray`.
+4. Результат всего выражения: `ByteArray?`.
+
+Та же идиома, что для `Cursor` в файле 02 (см. там подробный разбор `?.use`).
+
+**`PickVisualMedia` — что под капотом.** «Системный photo picker», добавлен в Android 13 (API 33) как часть privacy-улучшений. На API 33+ запускается отдельная Activity Google Photo Picker, которая показывает галерею **без необходимости разрешения `READ_MEDIA_IMAGES`** — пользователь сам выбирает, что хочет дать. На API 30-32 — через Google Play Services аналогичный picker. На API <30 — автоматический fallback на `ACTION_GET_CONTENT`.
+
+`PickVisualMediaRequest` принимает фильтр: `ImageOnly`, `VideoOnly`, `ImageAndVideo`. Возвращает `Uri?` через callback. URI имеет temporary grant — работает, пока процесс жив. Поэтому мы **сразу копируем байты** в свой `filesDir`: после kill процесса URI станет невалидным.
 
 ### Шаг 9 — Регистрация в Koin
 
@@ -395,228 +455,6 @@ Button(onClick = {
 
 Последним шагом — обновить корневой `GUIDE.md`, чтобы он отсылал к roadmap.
 
----
-
-## Разбор
-
-### Что такое `ImageLoader` и почему он один на приложение
-
-```kotlin
-fun createImageLoader(context: Context): ImageLoader = ImageLoader.Builder(context)
-    .crossfade(true)
-    .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.25).build() }
-    .diskCache { DiskCache.Builder().directory(...).maxSizeBytes(50L * 1024 * 1024).build() }
-    .build()
-```
-
-`ImageLoader` — это **главный объект Coil**. В нём живут:
-
-- Memory-cache (LRU в RAM).
-- Disk-cache (LRU на диске).
-- Executor для загрузки (по умолчанию — пул потоков).
-- Сетевые транспорты (HTTP-клиент, для `https://`-URL'ов).
-- Декодеры форматов (PNG, JPEG, GIF, WebP, SVG если включить расширение).
-- Logger, ComponentRegistry и т.п.
-
-Один `ImageLoader` обслуживает все `AsyncImage` в приложении. Если бы их было два — каждый держал бы свой кэш, и одни и те же обложки лежали бы в памяти/на диске дважды. Поэтому **один синглтон на процесс**.
-
-### `MemoryCache.maxSizePercent(context, 0.25)` — конкретные числа
-
-```kotlin
-MemoryCache.Builder().maxSizePercent(context, 0.25).build()
-```
-
-`maxSizePercent(context, 0.25)` означает: «возьми 25% от `Runtime.getRuntime().maxMemory()`, выраженную в байтах, и не превышай этот лимит».
-
-Численный пример. На обычном Android-устройстве `maxMemory` для приложения — ~256 MB (точное значение зависит от устройства; есть устройства с 192, есть с 512). 25% от 256 MB = **64 MB**.
-
-64 MB — это сотни обложек небольшого размера. Coil сам ужимает обложки до размера `AsyncImage` (если в UI 56dp обложка, в кэш ляжет картинка 56dp, не оригинал в 1024x1024). Поэтому памяти хватает с большим запасом.
-
-При нехватке Coil выкидывает наименее используемые (LRU): «не показывали этот item уже долго → удалим его кэш-запись».
-
-### `okio.Path` и `toOkioPath()` — зачем
-
-```kotlin
-.directory(context.cacheDir.resolve("cover_art").toOkioPath())
-```
-
-`context.cacheDir` — это `java.io.File`. Coil3 не использует `java.io.File` напрямую, он использует **`okio.Path`** — абстракция файлового пути из библиотеки Okio (Square).
-
-Почему: Coil3 — KMP-библиотека. На iOS нет `java.io.File`. Okio даёт единый Path-API, который под Android маппится в `java.io.File`, под iOS — в native NSURL/NSPath, под JS — в виртуальную файловую систему и т.п. Один и тот же код Coil работает везде.
-
-`File.toOkioPath()` — extension из okio, конвертирующий `java.io.File` → `okio.Path`. Это просто обёртка вокруг абсолютного пути.
-
-В наших Android-сборках это не имеет практического значения (всё работает как обычный `File`), но если завтра захочется собрать iOS-таргет — никаких изменений в этом коде не потребуется.
-
-### `crossfade(true)` — что физически делает
-
-`AsyncImage` под капотом — это `Box` с двумя слоями: текущая картинка + индикатор загрузки/ошибки. Состояние загрузки представлено через `AsyncImagePainter.State`:
-- `Empty` — ничего ещё не запросили.
-- `Loading` — идёт загрузка.
-- `Success` — картинка готова.
-- `Error` — не получилось.
-
-С `crossfade(true)` при переходе из `Loading` в `Success` Coil использует **`CrossfadeTransition`**: анимирует `alpha` нового изображения от 0 до 1 за ~100 мс. Старая картинка (или плейсхолдер) одновременно уходит в 0.
-
-Без `crossfade` обновление мгновенное — это «дёргано»: только что был чистый фон, через 16 мс появилась обложка резко. С `crossfade` — плавный fade-in, выглядит профессионально.
-
-`crossfade(durationMillis = 200)` — настройка длительности. По умолчанию — 100 мс.
-
-### `SingletonImageLoader.setSafe { createImageLoader(this) }` — лямбда-провайдер
-
-```kotlin
-SingletonImageLoader.setSafe { createImageLoader(this) }
-```
-
-Сигнатура `setSafe`:
-
-```kotlin
-fun setSafe(factory: SingletonImageLoader.Factory)
-
-fun interface Factory {
-    fun newImageLoader(context: PlatformContext): ImageLoader
-}
-```
-
-`setSafe { ... }` принимает **лямбду-фабрику**. Она НЕ вызывается сразу. Coil сохраняет лямбду внутри и вызывает её **при первом обращении** к глобальному ImageLoader (например, при первом `AsyncImage`).
-
-Зачем lazy-инициализация:
-- ImageLoader создаёт пулы потоков, открывает disk cache, читает индекс — это занимает несколько мс.
-- Если пользователь не открывает экраны с картинками сразу — мы экономим эти мс на старте.
-
-`setSafe` vs `set`:
-- `set(factory)` — упадёт с `IllegalStateException`, если фабрика уже была установлена.
-- `setSafe(factory)` — тихо игнорирует повторный вызов.
-
-Зачем `setSafe`: при `Application.onCreate` он вызывается один раз. Но если используешь Coil и в инструментальных тестах — там Application пересоздаётся, и `set` мог бы упасть. `setSafe` спасает.
-
-### `MediaMetadataRetriever` — нативный объект
-
-```kotlin
-val retriever = MediaMetadataRetriever()
-try {
-    retriever.setDataSource(...)
-    retriever.embeddedPicture
-} finally {
-    retriever.release()
-}
-```
-
-`MediaMetadataRetriever` — это Java-обёртка над **native C++ объектом**, который умеет парсить медиа-контейнеры (MP4, MP3, FLAC и т.д.). Native-часть держит:
-- file descriptor (открытый файл),
-- буферы парсинга,
-- декодеры конкретного формата.
-
-Это всё **не управляется GC**. Если ты потерял ссылку на `MediaMetadataRetriever` без `release()` — нативные ресурсы остаются. Через несколько сотен таких утечек — ANR, OOM, или система перестанет давать новые file descriptor.
-
-`try/finally` — обязателен. Использование `.use { }` тоже работает, потому что `MediaMetadataRetriever` реализует `AutoCloseable` начиная с API 29.
-
-`embeddedPicture` — свойство, которое читает байты обложки из метаданных. Возвращает `ByteArray?` (может быть null, если обложки нет). Внутри — парсинг ID3-тега для MP3, MP4 atoms для M4A, Vorbis comment для FLAC.
-
-Альтернатива — `MediaStore.Audio.Media.AlbumArt` (то, что мы используем как основной источник). Она быстрее, потому что MediaStore уже распарсил все треки при индексации. `MediaMetadataRetriever` мы используем как **fallback**, когда MediaStore по какой-то причине не нашёл обложку.
-
-### `bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }`
-
-Эта компактная строка содержит несколько идиом:
-
-1. **`openInputStream(uri)`** — возвращает `InputStream?`. Может быть `null`, если URI невалидный или нет прав.
-2. **`?.use { ... }`** — safe call + `Closeable.use`. Если stream не null — открой блок, после блока (или при исключении) автоматически закрой.
-3. **`it.readBytes()`** — extension Kotlin, читает stream до конца, возвращает `ByteArray`.
-4. Результат всего выражения: `ByteArray?` (null если openInputStream вернул null, иначе байты).
-
-Без `use` пришлось бы:
-
-```kotlin
-val stream = context.contentResolver.openInputStream(uri)
-val bytes = try {
-    stream?.readBytes()
-} finally {
-    stream?.close()
-}
-```
-
-С `use` — одна строка, гарантированное закрытие. Эта же идиома используется для `Cursor` в файле 02 (см. там подробный разбор `?.use`).
-
-### Coil cache key — как Coil решает «грузить или взять из кэша»
-
-Coil идентифицирует загрузку по **ключу**, который выводится из `model` (то, что ты передал в `AsyncImage`). Для:
-- `String` URL — ключ = строка URL.
-- `Uri` — ключ = `uri.toString()`.
-- `File` — ключ = абсолютный путь.
-
-Два разных `AsyncImage` с одинаковым `model` → один и тот же ключ → одна загрузка в фоне, оба компонента получат результат. Это бесплатная дедупликация.
-
-**Подвох:** если ты заменил содержимое файла (например, пользователь сменил обложку альбома и мы перезаписали `42.jpg`), но путь остался прежним — Coil **не узнает** об изменении. Он покажет закэшированную старую версию.
-
-Решения:
-1. **Менять URI**: `path?v=1` → `path?v=2` после смены. Coil увидит новый ключ → загрузит заново.
-2. **Ручная инвалидация**: `imageLoader.memoryCache?.remove(MemoryCache.Key(oldKey))` + `imageLoader.diskCache?.remove(oldKey)`.
-3. **Передача ImageRequest с `memoryCachePolicy(WRITE_ONLY)`** — кэш писать, но не читать (всегда грузим заново).
-
-Для нашего MVP подойдёт вариант 1 — добавлять версию в URI при смене обложки.
-
-### `PickVisualMedia` — что под капотом
-
-```kotlin
-val pickImage = rememberLauncherForActivityResult(
-    contract = ActivityResultContracts.PickVisualMedia(),
-) { uri -> ... }
-
-pickImage.launch(PickVisualMediaRequest(...))
-```
-
-`PickVisualMedia` — это «системный photo picker», добавлен в Android 13 (API 33) как часть privacy-улучшений. Под капотом:
-
-- **Android 13+ (API 33+):** запускается отдельная Activity Google Photo Picker, которая показывает галерею **без необходимости разрешения** `READ_MEDIA_IMAGES`. Пользователь сам выбирает, что хочет дать.
-- **Android 11-12 (API 30-32):** через Google Play Services шлёпает аналогичный picker.
-- **Android 10 и ниже:** автоматический fallback на `ACTION_GET_CONTENT` (старый метод выбора файлов через intent).
-
-Преимущество для нас — единое API, работающее на всех версиях, и **никаких permission'ов** просить не надо. Пользователь даёт доступ к выбранному файлу через temporary URI grant.
-
-`PickVisualMediaRequest` принимает фильтр: `ImageOnly`, `VideoOnly`, `ImageAndVideo`. Возвращает `Uri?` через callback: `null` если пользователь отменил, иначе URI выбранного файла.
-
-URI имеет временный grant — он работает, пока процесс жив. Поэтому мы **сразу копируем байты** в свой `filesDir`: после перезагрузки устройства / kill процесса URI станет невалидным.
-
-### `MaterialTheme.colorScheme.surfaceVariant`
-
-```kotlin
-.background(MaterialTheme.colorScheme.surfaceVariant)
-```
-
-`MaterialTheme` — Compose-обёртка над дизайн-системой Material 3. У неё есть три ключевых свойства:
-- `colorScheme: ColorScheme` — палитра цветов (~30 named colors).
-- `typography: Typography` — стили шрифтов (`titleLarge`, `bodyMedium`, ...).
-- `shapes: Shapes` — формы для скруглений.
-
-`colorScheme.surfaceVariant` — один из «фоновых» цветов, чуть отличающийся от `surface`. Material рекомендует использовать его для «приподнятых» поверхностей (карточки, плейсхолдеры). Цвет адаптируется к light/dark теме автоматически.
-
-Чтобы переопределить — обернуть `setContent` в `MaterialTheme(colorScheme = darkColorScheme())` или собрать кастомную палитру.
-
-`MaterialTheme.colorScheme.*` доступен только внутри `@Composable`-функций (это `CompositionLocal`). Поэтому ты не можешь сохранить цвет в обычной константе — только взять прямо в Composable.
-
-### Coil3 vs Coil2 — пакеты
-
-Coil3 — полностью переписан под KMP. Coil2 был Android-only. Главное различие — пакеты:
-
-| Coil2 | Coil3 |
-|---|---|
-| `io.coil-kt:coil-compose` | `io.coil-kt.coil3:coil-compose` |
-| `import coil.compose.AsyncImage` | `import coil3.compose.AsyncImage` |
-| `coil.ImageLoader` | `coil3.ImageLoader` |
-
-Будь осторожен с туториалами — если видишь `import coil.compose.AsyncImage` — это Coil2, не подойдёт.
-
-### Почему обложки треков из MediaStore, а пользовательских — в `filesDir`?
-
-Треки физически лежат на устройстве, MediaStore сам индексирует и кэширует их обложки. Когда трек удаляется — MediaStore обновляется автоматически.
-
-Пользовательские обложки — наши данные. Система их не знает. Должны сами хранить и чистить. Используем `filesDir` (а не `cacheDir`), потому что `cacheDir` система может очистить в любой момент при нехватке места — пользователь увидит свои альбомы без обложек, баг.
-
-### `contentScale = ContentScale.Crop`
-
-Картинка разного соотношения сторон не искажается — кропается до квадрата. Для обложек — стандарт.
-
----
 
 ## Подводные камни
 
