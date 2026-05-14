@@ -114,7 +114,7 @@ Coil3 для асинхронной загрузки, кэш обложек, п�
 
 ## Словарь терминов
 
-Быстрая шпаргалка. Каждый термин подробно объясняется в соответствующем файле гайда — в столбце «Подробно в» указан номер файла плюс маркер раздела (`Р` = `## Разбор`, `РС-N` = «Разбор по строкам» в Шаге N).
+Быстрая шпаргалка. Каждый термин подробно объясняется в соответствующем файле гайда — в столбце «Подробно в» указан номер файла; для конкретного шага указывается «Шаг N» (объяснения встроены прямо в шаги, отдельных разделов «Разбор» больше нет).
 
 ### Архитектура и сборка
 
@@ -122,78 +122,78 @@ Coil3 для асинхронной загрузки, кэш обложек, п�
 |--------|---------|-----------|
 | **Clean Architecture** | Разделение на слои `data` / `domain` / `presentation` | 01 |
 | **KMP / Kotlin Multiplatform** | Один код → несколько платформ | 01 |
-| **`expect` / `actual`** | Compile-time-полиморфизм: общий заголовок + реализация по таргетам, без vtable | 01-Р, 02, 04, 08 |
-| **Gradle-модуль** | Независимая единица сборки; `:` ↔ путь к директории | 01-Р |
-| **Version Catalog (`libs.versions.toml`)** | Централизованный список версий и артефактов; `alias(libs.plugins.X)` | 01-Р |
-| **`sourceSets { commonMain.dependencies { ... } }`** | Группы директорий компиляции для каждой target-платформы | 01-Р |
+| **`expect` / `actual`** | Compile-time-полиморфизм: общий заголовок + реализация по таргетам, без vtable | 01, 02, 04, 08 |
+| **Gradle-модуль** | Независимая единица сборки; `:` ↔ путь к директории | 01 |
+| **Version Catalog (`libs.versions.toml`)** | Централизованный список версий и артефактов; `alias(libs.plugins.X)` | 01 |
+| **`sourceSets { commonMain.dependencies { ... } }`** | Группы директорий компиляции для каждой target-платформы | 01 |
 
 ### Корутины и потоки данных
 
 | Термин | Коротко | Подробно в |
 |--------|---------|-----------|
-| **Coroutine / корутина** | Кооперативная задача, которая отдаёт поток обратно в пул на suspend-точке | 02-РС-7 |
-| **`suspend`** | Модификатор функции с неявным `Continuation`; вызов = потенциальная suspend-точка | 02-РС-7 |
-| **`Dispatchers.Main` / `Default` / `IO`** | Пулы потоков под разные задачи (UI / CPU / блокирующие I/O) | 02-Р |
-| **`withContext(Dispatchers.X)`** | Suspend-функция: переключиться, дождаться, вернуться | 02-Р |
-| **`launch`** | Запустить новую корутину параллельно (не дожидаться) | 02-Р |
-| **`Mutex` / `withLock`** | Корутинный замок: блокирует **корутину**, не поток; не реентрант | 02-РС-7 |
-| **`Flow`** | Cold-поток: пока никто не collect — ничего не происходит | 02, 06-Р |
-| **`StateFlow`** | Hot-поток с одним «текущим значением»; новый подписчик получает его сразу | 02-РС-7, 06-Р |
-| **`SharedFlow`** | Hot-поток без текущего значения; для одноразовых событий | 06-Р |
-| **`MutableStateFlow.value =`** | Атомарная публикация; conflated; встроен `distinctUntilChanged` | 02-РС-7 |
-| **`asStateFlow()`** | Апкаст: тот же объект, но без setter снаружи (read-only обёртка) | 02-РС-7 |
-| **`Flow.map` vs `List.map`** | Разные функции с одинаковым именем: оператор cold-flow vs синхронная коллекция | 02-РС-8 |
-| **`combine(a, b, c) { ... }`** | Объединить flow; ждёт первый эмит каждого, потом пересчитывает на любой emit | 06-Р |
-| **`stateIn`** | Оператор: cold `Flow<T>` → hot `StateFlow<T>` в указанном scope | 06-Р |
-| **`SharingStarted.WhileSubscribed(timeout)`** | Подписка живёт, пока есть collector, плюс `timeout` мс после ухода последнего | 06-Р |
-| **`viewModelScope`** | `SupervisorJob + Main.immediate`; отменяется в `ViewModel.onCleared()` | 06-Р |
-| **`runCatching` в корутинах** | Ловит **в т.ч.** `CancellationException` — нужно явно пробрасывать его | 05-Р, 06-Р |
+| **Coroutine / корутина** | Кооперативная задача, которая отдаёт поток обратно в пул на suspend-точке | 02 Шаг 7 |
+| **`suspend`** | Модификатор функции с неявным `Continuation`; вызов = потенциальная suspend-точка | 02 Шаг 7 |
+| **`Dispatchers.Main` / `Default` / `IO`** | Пулы потоков под разные задачи (UI / CPU / блокирующие I/O) | 02 |
+| **`withContext(Dispatchers.X)`** | Suspend-функция: переключиться, дождаться, вернуться | 02 |
+| **`launch`** | Запустить новую корутину параллельно (не дожидаться) | 02 |
+| **`Mutex` / `withLock`** | Корутинный замок: блокирует **корутину**, не поток; не реентрант | 02 Шаг 7 |
+| **`Flow`** | Cold-поток: пока никто не collect — ничего не происходит | 02, 06 |
+| **`StateFlow`** | Hot-поток с одним «текущим значением»; новый подписчик получает его сразу | 02 Шаг 7, 06 |
+| **`SharedFlow`** | Hot-поток без текущего значения; для одноразовых событий | 06 |
+| **`MutableStateFlow.value =`** | Атомарная публикация; conflated; встроен `distinctUntilChanged` | 02 Шаг 7 |
+| **`asStateFlow()`** | Апкаст: тот же объект, но без setter снаружи (read-only обёртка) | 02 Шаг 7 |
+| **`Flow.map` vs `List.map`** | Разные функции с одинаковым именем: оператор cold-flow vs синхронная коллекция | 02 Шаг 8 |
+| **`combine(a, b, c) { ... }`** | Объединить flow; ждёт первый эмит каждого, потом пересчитывает на любой emit | 06 |
+| **`stateIn`** | Оператор: cold `Flow<T>` → hot `StateFlow<T>` в указанном scope | 06 |
+| **`SharingStarted.WhileSubscribed(timeout)`** | Подписка живёт, пока есть collector, плюс `timeout` мс после ухода последнего | 06 |
+| **`viewModelScope`** | `SupervisorJob + Main.immediate`; отменяется в `ViewModel.onCleared()` | 06 |
+| **`runCatching` в корутинах** | Ловит **в т.ч.** `CancellationException` — нужно явно пробрасывать его | 05, 06 |
 
 ### Kotlin-фишки
 
 | Термин | Коротко | Подробно в |
 |--------|---------|-----------|
-| **Property delegation (`by`)** | `var x by mutableStateOf(...)` — сахар над `getValue/setValue` | 02-РС-10 |
-| **Constructor reference (`::Class`)** | Ссылка на конструктор как `KFunctionN`; используется `singleOf(::X)` | 05-Р |
-| **`groupBy` / `mapIndexed` / `sumOf` / `firstOrNull`** | Стандартные операторы коллекций — каждый разобран на конкретных треках | 02-РС-8 |
-| **`sortedBy { it.title.lowercase() }`** | Зачем `.lowercase()`: иначе `Z < a < Я < я` по Unicode | 02-РС-8 |
-| **`?.use { }`** | `Closeable.use` = `try { ... } finally { close() }` | 02-Р |
-| **`coerceAtLeast` / `coerceIn` / `takeIf`** | Clamp + условный `value-or-null` идиомы | 04-Р |
-| **`run` / `let` / `apply` / `also`** | Scope-функции: this/it × возвращает блок/this | 04-Р |
-| **Extension на nullable receiver** | `fun String?.orFallback(...)` — можно вызвать на `null` | 02-Р |
+| **Property delegation (`by`)** | `var x by mutableStateOf(...)` — сахар над `getValue/setValue` | 02 Шаг 10 |
+| **Constructor reference (`::Class`)** | Ссылка на конструктор как `KFunctionN`; используется `singleOf(::X)` | 05 |
+| **`groupBy` / `mapIndexed` / `sumOf` / `firstOrNull`** | Стандартные операторы коллекций — каждый разобран на конкретных треках | 02 Шаг 8 |
+| **`sortedBy { it.title.lowercase() }`** | Зачем `.lowercase()`: иначе `Z < a < Я < я` по Unicode | 02 Шаг 8 |
+| **`?.use { }`** | `Closeable.use` = `try { ... } finally { close() }` | 02 |
+| **`coerceAtLeast` / `coerceIn` / `takeIf`** | Clamp + условный `value-or-null` идиомы | 04 |
+| **`run` / `let` / `apply` / `also`** | Scope-функции: this/it × возвращает блок/this | 04 |
+| **Extension на nullable receiver** | `fun String?.orFallback(...)` — можно вызвать на `null` | 02 |
 
 ### MediaStore и сканирование
 
 | Термин | Коротко | Подробно в |
 |--------|---------|-----------|
 | **MediaStore** | Системная БД Android со списком медиафайлов | 02 |
-| **`Cursor` + `?.use`** | ContentResolver-ресурс с обязательным `close()` | 02-Р |
-| **`Build.VERSION.SDK_INT`** | Runtime-проверка версии Android для совместимости | 02-Р |
+| **`Cursor` + `?.use`** | ContentResolver-ресурс с обязательным `close()` | 02 |
+| **`Build.VERSION.SDK_INT`** | Runtime-проверка версии Android для совместимости | 02 |
 
 ### Room и БД
 
 | Термин | Коротко | Подробно в |
 |--------|---------|-----------|
 | **Room** | ORM поверх SQLite, кодоген через KSP | 03 |
-| **DAO (Data Access Object)** | Интерфейс с SQL-запросами; Room генерирует `_Impl` | 03-Р |
-| **`@Entity` / `@PrimaryKey(autoGenerate)`** | `id = 0` как маркер «новая запись»; SQLite сам выдаст id | 03-Р |
-| **`@Index`** | B-tree поверх колонки: O(log N) вместо O(N) для `WHERE` | 03-Р |
-| **`@Embedded` + `@Relation` + `Junction`** | Many-to-many через junction-таблицу; два SQL + сшивка в Kotlin | 03-Р |
-| **`@Transaction`** | Один transactional блок; обязателен с `@Relation` | 03-Р |
-| **`Flow<List<X>>` в DAO** | InvalidationTracker подписывается на таблицы и реэмитит при изменениях | 03-Р |
-| **`OnConflictStrategy.IGNORE/REPLACE/ABORT`** | Что делать при дубле PK/UNIQUE на `INSERT` | 03-Р |
-| **`fallbackToDestructiveMigration`** | DROP всех таблиц при несовпадении версий — для разработки | 03-Р |
-| **KSP (Kotlin Symbol Processing)** | Генератор кода; для KMP — `add("kspAndroid", ...)` | 03-Р |
+| **DAO (Data Access Object)** | Интерфейс с SQL-запросами; Room генерирует `_Impl` | 03 |
+| **`@Entity` / `@PrimaryKey(autoGenerate)`** | `id = 0` как маркер «новая запись»; SQLite сам выдаст id | 03 |
+| **`@Index`** | B-tree поверх колонки: O(log N) вместо O(N) для `WHERE` | 03 |
+| **`@Embedded` + `@Relation` + `Junction`** | Many-to-many через junction-таблицу; два SQL + сшивка в Kotlin | 03 |
+| **`@Transaction`** | Один transactional блок; обязателен с `@Relation` | 03 |
+| **`Flow<List<X>>` в DAO** | InvalidationTracker подписывается на таблицы и реэмитит при изменениях | 03 |
+| **`OnConflictStrategy.IGNORE/REPLACE/ABORT`** | Что делать при дубле PK/UNIQUE на `INSERT` | 03 |
+| **`fallbackToDestructiveMigration`** | DROP всех таблиц при несовпадении версий — для разработки | 03 |
+| **KSP (Kotlin Symbol Processing)** | Генератор кода; для KMP — `add("kspAndroid", ...)` | 03 |
 
 ### Воспроизведение
 
 | Термин | Коротко | Подробно в |
 |--------|---------|-----------|
 | **Media3 / ExoPlayer** | Современная Android-библиотека для воспроизведения медиа | 04 |
-| **`MediaSessionService`** | Foreground-сервис, в котором живёт плеер; интеграция с lockscreen/BT | 04-Р |
-| **`MediaController.buildAsync()`** | Асинхронный коннект через Binder/IPC; возвращает `ListenableFuture` | 04-Р |
-| **`AudioAttributes(USAGE_MEDIA)`** | Подсказка системе для аудиофокуса, Bluetooth, регулятора громкости | 04-Р |
-| **`Player.Listener`** | Java-интерфейс с дефолтными методами; вызывается на main | 04-Р |
+| **`MediaSessionService`** | Foreground-сервис, в котором живёт плеер; интеграция с lockscreen/BT | 04 |
+| **`MediaController.buildAsync()`** | Асинхронный коннект через Binder/IPC; возвращает `ListenableFuture` | 04 |
+| **`AudioAttributes(USAGE_MEDIA)`** | Подсказка системе для аудиофокуса, Bluetooth, регулятора громкости | 04 |
+| **`Player.Listener`** | Java-интерфейс с дефолтными методами; вызывается на main | 04 |
 
 ### DI
 
@@ -201,12 +201,12 @@ Coil3 для асинхронной загрузки, кэш обложек, п�
 |--------|---------|-----------|
 | **DI (Dependency Injection)** | Паттерн: получать зависимости снаружи, не создавать внутри | 05 |
 | **Koin** | Лёгкий DI-фреймворк для Kotlin | 05 |
-| **`module { ... }`** | DSL-функция, лямбда с receiver `Module` | 05-Р |
-| **`single { ... }` (lazy)** | Создаётся при первом `get()`, дальше кешируется | 05-Р |
-| **`factory` / `viewModel`** | Новый экземпляр на каждый запрос / на dest-scope | 05-Р |
-| **`singleOf(::X) { bind<Y>() }`** | Constructor-reference + регистрация под другим типом | 05-Р |
-| **`androidContext()`** | DSL-helper из koin-android для получения зарегистрированного `Context` | 05-Р |
-| **`koinViewModel()`** | Compose-обёртка: `viewModel()` + Koin-фактория | 05-Р |
+| **`module { ... }`** | DSL-функция, лямбда с receiver `Module` | 05 |
+| **`single { ... }` (lazy)** | Создаётся при первом `get()`, дальше кешируется | 05 |
+| **`factory` / `viewModel`** | Новый экземпляр на каждый запрос / на dest-scope | 05 |
+| **`singleOf(::X) { bind<Y>() }`** | Constructor-reference + регистрация под другим типом | 05 |
+| **`androidContext()`** | DSL-helper из koin-android для получения зарегистрированного `Context` | 05 |
+| **`koinViewModel()`** | Compose-обёртка: `viewModel()` + Koin-фактория | 05 |
 
 ### UI и навигация
 
@@ -214,19 +214,19 @@ Coil3 для асинхронной загрузки, кэш обложек, п�
 |--------|---------|-----------|
 | **`UiState`** | Data/sealed class — единый снимок состояния экрана | 06 |
 | **`UiEvent`** | Sealed-иерархия: события от UI к ViewModel (клик, ввод) | 06 |
-| **`mutableStateOf` + `remember` + `by`** | Три механизма Compose-state в одной строке | 02-РС-10 |
-| **`LaunchedEffect(key)`** | Запустить корутину при появлении/смене ключа; `Unit` = один раз | 06-Р |
-| **`collectAsStateWithLifecycle`** | Подписка на flow, отменяется при STOPPED — экономит CPU/батарею | 06-Р |
-| **`collectLatest`** | Отменяет обработку предыдущего эмита при новом — для дебаунса | 06-Р |
-| **Computed property** | `val x get() = ...` — не поле, а функция; пересчёт на каждый доступ | 06-Р |
+| **`mutableStateOf` + `remember` + `by`** | Три механизма Compose-state в одной строке | 02 Шаг 10 |
+| **`LaunchedEffect(key)`** | Запустить корутину при появлении/смене ключа; `Unit` = один раз | 06 |
+| **`collectAsStateWithLifecycle`** | Подписка на flow, отменяется при STOPPED — экономит CPU/батарею | 06 |
+| **`collectLatest`** | Отменяет обработку предыдущего эмита при новом — для дебаунса | 06 |
+| **Computed property** | `val x get() = ...` — не поле, а функция; пересчёт на каждый доступ | 06 |
 | **Navigation Compose** | Библиотека Jetpack для навигации между Composable-экранами | 07 |
-| **Type-safe routes (`@Serializable`)** | Маршруты — data class; плагин генерирует `KSerializer` | 07-Р |
-| **`composable<T>` + `toRoute()`** | Reified-тип destination + декодирование аргументов | 07-Р |
-| **`popUpTo + saveState + restoreState + launchSingleTop`** | Каждый флаг отдельно: что именно делает | 07-Р |
-| **`Scaffold` + `PaddingValues`** | Slot-API + insets для system bars | 07-Р |
-| **`GridCells.Adaptive(160.dp)`** | Адаптивная сетка: floor(W / minSize) колонок | 07-Р |
-| **`items(..., key = { it.id })`** | Стабильный ключ для сохранения state при перестановках | 07-Р |
-| **`enableEdgeToEdge` + `WindowInsets`** | Прозрачные system bars + ручной учёт insets | 07-Р |
+| **Type-safe routes (`@Serializable`)** | Маршруты — data class; плагин генерирует `KSerializer` | 07 |
+| **`composable<T>` + `toRoute()`** | Reified-тип destination + декодирование аргументов | 07 |
+| **`popUpTo + saveState + restoreState + launchSingleTop`** | Каждый флаг отдельно: что именно делает | 07 |
+| **`Scaffold` + `PaddingValues`** | Slot-API + insets для system bars | 07 |
+| **`GridCells.Adaptive(160.dp)`** | Адаптивная сетка: floor(W / minSize) колонок | 07 |
+| **`items(..., key = { it.id })`** | Стабильный ключ для сохранения state при перестановках | 07 |
+| **`enableEdgeToEdge` + `WindowInsets`** | Прозрачные system bars + ручной учёт insets | 07 |
 | **Compose Resources** | Кросс-платформенная замена `strings.xml` для локализации | 07 |
 
 ### Coil
@@ -234,14 +234,14 @@ Coil3 для асинхронной загрузки, кэш обложек, п�
 | Термин | Коротко | Подробно в |
 |--------|---------|-----------|
 | **Coil3** | KMP-библиотека загрузки изображений (Coil2 был Android-only) | 08 |
-| **`ImageLoader`** | Глобальный объект Coil: кэши + executor + декодеры | 08-Р |
-| **`SingletonImageLoader.setSafe { ... }`** | Lazy-провайдер глобального ImageLoader | 08-Р |
-| **`MemoryCache.maxSizePercent(ctx, 0.25)`** | 25% от `Runtime.maxMemory()` — на 256MB heap → 64MB | 08-Р |
-| **`crossfade(true)`** | Анимация alpha 0→1 при переходе Loading → Success (~100мс) | 08-Р |
-| **`MediaMetadataRetriever`** | Нативный объект, требует `release()`/try-finally | 08-Р |
-| **Coil cache key** | Идентификатор по `model`; для инвалидации — менять URI | 08-Р |
-| **`PickVisualMedia`** | Системный photo picker без `READ_MEDIA_IMAGES` (API 33+) | 08-Р |
-| **`MaterialTheme.colorScheme.surfaceVariant`** | Material 3 палитра, доступна через `CompositionLocal` | 08-Р |
+| **`ImageLoader`** | Глобальный объект Coil: кэши + executor + декодеры | 08 |
+| **`SingletonImageLoader.setSafe { ... }`** | Lazy-провайдер глобального ImageLoader | 08 |
+| **`MemoryCache.maxSizePercent(ctx, 0.25)`** | 25% от `Runtime.maxMemory()` — на 256MB heap → 64MB | 08 |
+| **`crossfade(true)`** | Анимация alpha 0→1 при переходе Loading → Success (~100мс) | 08 |
+| **`MediaMetadataRetriever`** | Нативный объект, требует `release()`/try-finally | 08 |
+| **Coil cache key** | Идентификатор по `model`; для инвалидации — менять URI | 08 |
+| **`PickVisualMedia`** | Системный photo picker без `READ_MEDIA_IMAGES` (API 33+) | 08 |
+| **`MaterialTheme.colorScheme.surfaceVariant`** | Material 3 палитра, доступна через `CompositionLocal` | 08 |
 
 ---
 
