@@ -199,6 +199,10 @@ Text(stringResource(Res.string.tracks_search_hint))
 
 ### Шаг 3 — Routes
 
+Маршруты в Navigation Compose 2.8+ — **type-safe**: каждый экран это `@Serializable` data class или data object, навигация принимает не строку, а сам объект (`navController.navigate(AlbumDetails("42"))`). Это убирает классические баги старого API: опечатки в именах параметров, ручное доставание через `getString`, неработающий refactor IDE.
+
+Создаём `Routes.kt`:
+
 ```kotlin
 // shared/presentation/src/commonMain/kotlin/org/example/mp3player/presentation/navigation/Routes.kt
 package org.example.mp3player.presentation.navigation
@@ -232,7 +236,21 @@ val TopLevelRoute.asRoute: Route
 @Serializable data object UserAlbumsRoute : Route
 ```
 
+**Что плагин `kotlinx.serialization` делает в момент сборки.** Сама аннотация `@Serializable` ничего не делает — её обрабатывает **компилятор-плагин** (подключается через `alias(libs.plugins.kotlinSerialization)`). Что плагин генерирует:
+
+1. Для каждого `@Serializable`-класса создаётся companion object с методом `serializer()`, который возвращает `KSerializer<T>` — объект, умеющий кодировать/декодировать инстанс в structured-формат.
+2. Этот `KSerializer` универсальный: его можно использовать с JSON, с binary форматами, с собственными.
+3. Без плагина: `data class` помечен `@Serializable`, но `serializer()` не сгенерирован → `SerializationException: Serializer for class 'AlbumDetails' is not found`.
+
+Navigation Compose 2.8+ использует этот `KSerializer`:
+- `navController.navigate(AlbumDetails("123"))` → `Json.encodeToString(serializer, value)` → URL-encoded string → кладётся в back stack.
+- `entry.toRoute<AlbumDetails>()` → достаёт строку из back stack → `Json.decodeFromString(serializer, string)` → возвращает `AlbumDetails`.
+
+В Logcat можно увидеть фактический URL — что-то вроде `org.example.../AlbumDetails/123`. Это и есть закодированный data class.
+
 ### Шаг 4 — NavHost
+
+`NavHost` — это `@Composable`, который держит граф навигации и рендерит ту destination, что сейчас наверху back stack'а. Каждая `composable<T>` регистрирует destination типа `T`.
 
 ```kotlin
 // shared/presentation/src/commonMain/kotlin/org/example/mp3player/presentation/navigation/AppNavHost.kt
@@ -294,6 +312,22 @@ fun AppNavHost(
     }
 }
 ```
+
+**`composable<T>` — что reified-тип даёт.** Это inline-функция с reified-параметром:
+
+```kotlin
+inline fun <reified T : Any> NavGraphBuilder.composable(
+    typeMap: Map<KType, NavType<*>> = emptyMap(),
+    deepLinks: List<NavDeepLink> = emptyList(),
+    content: @Composable (NavBackStackEntry) -> Unit,
+)
+```
+
+`reified T` означает: компилятор знает реальный тип `T` в момент вызова и может его использовать в рантайме (через `T::class`, `serializer<T>()`). Под капотом `composable<AlbumDetails>` достаёт `serializer<AlbumDetails>()` (сгенерированный плагином) и регистрирует destination с этим serializer'ом.
+
+`backStackEntry.toRoute<AlbumDetails>()` — тоже extension с reified. Достаёт сохранённую строку и декодирует в нужный тип. Старое API было через строки и `entry.arguments?.getString("albumId")` — type-safe вариант намного безопаснее.
+
+`navigate(X)` кладёт X наверх back stack'а. `popBackStack()` снимает верхний элемент, возвращается к предыдущему. Системная кнопка «назад» эквивалентна `popBackStack()`; если стек пуст — Activity закрывается.
 
 ### Шаг 5 — Главный экран с нижней навигацией
 
@@ -380,10 +414,25 @@ private fun androidx.navigation.NavDestination?.isTopLevel(): Boolean {
 }
 ```
 
-**Что делает `popUpTo(TracksRoute) { saveState = true }` + `restoreState = true`:**
-Когда ты переключаешься между табами, НЕ пересоздаёт экран каждый раз — сохраняет `state` (ViewModel state, scroll position) и восстанавливает при возврате. Это то, что хочет пользователь: ушёл со вкладки Albums, вернулся — тот же скролл.
+**`popUpTo + saveState + restoreState + launchSingleTop` — каждая опция отдельно.** Это блок `NavOptionsBuilder`, который настраивает, как именно происходит навигация.
+
+`popUpTo(TracksRoute)` — «перед тем как добавить новую destination, удали из стека всё **до** `TracksRoute` (не включая её)». Без этого при переключении вкладок «Tracks → Albums → Tracks → Albums» накапливался бы стек длиной 4. С `popUpTo` стек всегда краткий.
+
+`saveState = true` (внутри `popUpTo`) — «когда удаляешь destination'ы — сохрани их state (включая ViewModel и scroll position)». Без флага: removed destination'ы умирают, state теряется. С флагом: state кладётся в кэш под ключом destination.
+
+`restoreState = true` — «когда добавляешь новую destination — если у неё в кэше есть сохранённый state, восстанови». Без флага: navigate всегда создаёт свежий экземпляр (новая ViewModel, нулевой scroll). С флагом: подтянет сохранённое.
+
+Пара `saveState + restoreState` даёт эффект: «при переключении вкладок сохраняется ViewModel и scroll, при возврате на вкладку всё как было».
+
+`launchSingleTop = true` — «если destination, в которую навигируем, **уже** наверху стека — не создавай дубль, переиспользуй». Без флага тапнул на уже выбранной вкладке → создастся новый экземпляр поверх старого. С флагом — no-op.
+
+**`hasRoute(item.route::class)` + `hierarchy`.** `currentDestination.hierarchy` — путь от текущего узла **вверх по графу** до корня. Зачем последовательность: для nested graphs (когда у тебя `navigation { composable<...> }` внутри основного графа). `hasRoute(...)` сравнивает по `KClass`, не по строке — type-safe.
+
+**`Scaffold` — slot API.** Каждый параметр (`topBar`, `bottomBar`, `snackbarHost`, `floatingActionButton`, `content`) — это `@Composable () -> Unit`. Scaffold размещает их и считает `PaddingValues` (top, bottom, start, end) с учётом размеров top/bottom bars и system bars. **Всегда применяй `Modifier.padding(padding)`** к корневому контейнеру content'а — иначе контент уедет под bottom bar и под status bar.
 
 ### Шаг 6 — `AlbumsScreen` (Grid)
+
+Альбомы — сетка карточек с обложками. Material 3 даёт `LazyVerticalGrid` с адаптивными колонками.
 
 ```kotlin
 // shared/presentation/src/commonMain/kotlin/org/example/mp3player/presentation/albums/AlbumsScreen.kt
@@ -456,6 +505,23 @@ private fun AlbumCard(album: Album, onClick: () -> Unit) {
     }
 }
 ```
+
+**`LazyVerticalGrid(GridCells.Adaptive(160.dp))` — как считается число колонок.** «Динамически положи столько колонок, сколько влезет, при условии что каждая >= 160dp». Алгоритм при ширине экрана `W`: `n = floor(W / 160)`, реальная ширина каждой колонки `W / n`. Примеры:
+- Телефон 360dp → 2 колонки по ~180dp.
+- Ландшафтная 720dp → 4 колонки по ~180dp.
+- Планшет 800dp → 5 колонок по ~160dp.
+
+Альтернатива — `GridCells.Fixed(n)`: ровно n колонок, всегда. Удобно для фиксированного дизайна.
+
+Подвох: `LazyVerticalGrid` нельзя помещать в родителя без ограничения высоты (внутри `Column` без `Modifier.weight(1f)`) — упадёт с `IllegalStateException: Vertically scrollable component was measured with an infinity maximum height constraints`.
+
+**`items(items = X, key = { it.id })` — зачем ключ.** `key` — функция, которая для каждого элемента возвращает «стабильный идентификатор». Compose использует его, чтобы понять, какой item остался прежним при изменении списка.
+
+Без ключа Compose сравнивает items по позиции — вставил элемент в начало → Compose думает, что **все** items изменились → scroll и анимации сбрасываются. С ключом: «элемент с id=5 переехал с позиции 0 на 1, но это **тот же** элемент» — state сохраняется.
+
+Правило: всегда `key` для items в `LazyColumn`/`LazyVerticalGrid`.
+
+`AsyncImage` (из Coil3) — загружает изображение по URI. Поддерживает `content://` (наши `albumart`-URI работают). Подробнее — в файле 08.
 
 ### Шаг 7 — `PlayerScreen`
 
@@ -670,6 +736,8 @@ fun CreateUserAlbumDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
 
 ### Шаг 9 — MainActivity
 
+Финальная точка сборки — единственная Activity приложения. Включает edge-to-edge режим, оборачивает контент в Material 3 тему и запускает `MainScaffold`.
+
 ```kotlin
 // composeApp/src/androidMain/kotlin/org/example/mp3player/MainActivity.kt
 package org.example.mp3player
@@ -694,273 +762,12 @@ class MainActivity : ComponentActivity() {
 }
 ```
 
----
+**`enableEdgeToEdge()` (из `androidx.activity`)** делает status bar и navigation bar **прозрачными** и позволяет контенту рисоваться под ними. Современный Material 3 дизайн именно такой — нет «полосок» по краям, всё единое.
 
-## Разбор
+Подвох: контент теперь действительно лезет под bars, и без учёта `WindowInsets` текст уедет под status bar. Решение — `Scaffold` по умолчанию использует `contentWindowInsets = ScaffoldDefaults.contentWindowInsets`, который включает system bars. `padding` в content-лямбде учтёт высоту status bar и navigation bar и поднимет контент. Если нужен ручной контроль — `Modifier.windowInsetsPadding(WindowInsets.statusBars)`.
 
-### `@Serializable` — что плагин делает в момент сборки
+`MaterialTheme { ... }` оборачивает контент в палитру/типографию/формы Material 3. Без него все цвета будут дефолтными.
 
-```kotlin
-@Serializable data class AlbumDetails(val albumId: String) : Route
-```
-
-`@Serializable` — аннотация из `kotlinx.serialization`. Сама по себе она ничего не делает — её обрабатывает **компилятор-плагин** `kotlinx-serialization`, подключаемый через `alias(libs.plugins.kotlinSerialization)`.
-
-Что плагин генерирует на этапе сборки:
-
-1. Для каждого `@Serializable`-класса создаётся **companion object с методом `serializer()`**, который возвращает `KSerializer<T>` — объект, умеющий кодировать/декодировать инстанс класса в structured-формат.
-2. Этот `KSerializer` — универсальный: его можно использовать с JSON (`Json.encodeToString`), с binary (`Cbor.encodeToByteArray`), с собственными форматами.
-3. Без плагина: `data class` помечен `@Serializable`, но `serializer()` не сгенерирован → `SerializationException: Serializer for class 'AlbumDetails' is not found`.
-
-Navigation Compose 2.8+ использует этот `KSerializer` для **type-safe routes**:
-- `navController.navigate(AlbumDetails("123"))` → `Json.encodeToString(serializer, value)` → URL-encoded string → кладётся в back stack.
-- `entry.toRoute<AlbumDetails>()` → достаёт строку из back stack → `Json.decodeFromString(serializer, string)` → возвращает `AlbumDetails`.
-
-В Logcat можешь увидеть фактический URL — что-то вроде `org.example.../AlbumDetails/123`. Это и есть закодированный data class.
-
-### `composable<AlbumDetails> { entry -> entry.toRoute() }` — что reified-тип даёт
-
-```kotlin
-composable<AlbumDetails> { backStackEntry ->
-    val args: AlbumDetails = backStackEntry.toRoute()
-    AlbumDetailsScreen(albumId = args.albumId, ...)
-}
-```
-
-`composable<T>` — это inline-функция с reified-параметром:
-
-```kotlin
-inline fun <reified T : Any> NavGraphBuilder.composable(
-    typeMap: Map<KType, NavType<*>> = emptyMap(),
-    deepLinks: List<NavDeepLink> = emptyList(),
-    content: @Composable (NavBackStackEntry) -> Unit,
-)
-```
-
-`reified T` означает: компилятор знает реальный тип `T` в момент вызова и может его использовать в рантайме (через `T::class`, `serializer<T>()`). Под капотом `composable<AlbumDetails>` достаёт `serializer<AlbumDetails>()` и регистрирует destination с этим serializer'ом.
-
-`backStackEntry.toRoute<AlbumDetails>()` — extension-функция, тоже с reified. Она достаёт сохранённую строку и декодирует в нужный тип.
-
-Старое API (string routes):
-
-```kotlin
-composable(route = "album_details/{albumId}") { entry ->
-    val albumId = entry.arguments?.getString("albumId") ?: return@composable
-    AlbumDetailsScreen(albumId)
-}
-```
-
-Проблемы старого API:
-- Имя параметра — строка, легко опечататься (`"albumid"` vs `"albumId"`).
-- Тип параметра — нужно вручную доставать через `getString`/`getInt`.
-- Рефакторинг IDE не работает (имена в строках).
-
-Type-safe вариант решает всё это, но требует подключения сериализации.
-
-### `navigate()` vs `popBackStack()` vs back stack
-
-«Back stack» — это **список destination-ов** в порядке «куда возвращаться». Когда пользователь жмёт системный «назад», убирается верхний элемент стека и показывается тот, что под ним.
-
-| Операция | Что делает с back stack |
-|---|---|
-| `navController.navigate(X)` | Кладёт X наверх стека |
-| `navController.popBackStack()` | Снимает верхний элемент, возвращается к предыдущему |
-| `navController.popBackStack(X, inclusive = false)` | Снимает всё **до** X (X остаётся наверху) |
-| `navController.popBackStack(X, inclusive = true)` | Снимает всё **включая** X |
-
-Системная кнопка «назад» эквивалентна `popBackStack()`. Если стек пуст — Activity закрывается.
-
-### `popUpTo + saveState + restoreState + launchSingleTop` — каждая опция отдельно
-
-```kotlin
-navController.navigate(item.route) {
-    popUpTo(TracksRoute) { saveState = true }
-    launchSingleTop = true
-    restoreState = true
-}
-```
-
-Это блок `NavOptionsBuilder`, в котором можно настроить, как именно происходит навигация. Разберём по флагу.
-
-#### `popUpTo(TracksRoute)`
-
-«Перед тем как добавить новую destination, удали из стека всё **до** `TracksRoute` (не включая её)».
-
-Зачем: при переключении вкладок не накапливать стек. Без `popUpTo` сценарий «Tracks → Albums → Tracks → Albums → ...» дал бы стек длиной 4, и системный «назад» проходил бы по всем подряд. С `popUpTo(TracksRoute)` стек всегда краткий: либо просто Tracks, либо Tracks + текущая вкладка.
-
-#### `saveState = true` (внутри popUpTo)
-
-«Когда удаляешь destination'ы — сохрани их state (включая ViewModel и scroll position)».
-
-Без флага: removed destination просто умирают, state теряется. С флагом: state кладётся в специальный кэш под ключом этой destination.
-
-#### `restoreState = true`
-
-«Когда добавляешь новую destination — если у неё в кэше есть сохранённый state, восстанови».
-
-Без флага: navigate всегда создаёт свежий экземпляр destination (новая ViewModel, нулевой scroll). С флагом: если у этой destination когда-то был сохранён state (через `saveState`), он подтянется.
-
-В паре `saveState + restoreState` дают эффект: «при переключении вкладок сохраняется ViewModel и scroll, при возврате на вкладку всё как было».
-
-#### `launchSingleTop = true`
-
-«Если destination, в которую навигируем, **уже** наверху стека — не создавай дубль, переиспользуй».
-
-Зачем: если пользователь тапнул по уже выбранной вкладке (он уже на Tracks, тапнул Tracks ещё раз) — без флага создастся новый экземпляр Tracks поверх старого. Это дубль в стеке и потеря state. С флагом — операция превращается в no-op.
-
-### `hasRoute(item.route::class)` + `hierarchy`
-
-```kotlin
-val selected = currentDestination?.hierarchy
-    ?.any { it.hasRoute(item.route::class) } == true
-```
-
-`currentDestination` — это `NavDestination?`, узел в графе навигации. У узла есть свойство `hierarchy: Sequence<NavDestination>` — путь от текущего узла **вверх по графу** до корня.
-
-Зачем последовательность: для **nested graphs** (когда у тебя `navigation { composable<...>; composable<...> }` внутри основного графа). Текущая destination — это лист, а её родительская навигационная группа — узел над ней. Чтобы определить «активна ли вкладка X», нужно проверить не только саму destination, но и все её родительские группы (вдруг X — это subgraph).
-
-`hasRoute(item.route::class)` — extension, проверяющая, что destination зарегистрирована под маршрутом этого типа. Сравнивает по `KClass`, не по строке — type-safe.
-
-В нашем плоском графе `hierarchy` всегда содержит 1-2 элемента (destination + root graph). Для сложных графов — больше.
-
-### `Scaffold` — slot API и почему это удобно
-
-```kotlin
-Scaffold(
-    snackbarHost = { SnackbarHost(snackbar) },
-    bottomBar = { ... },
-    floatingActionButton = { ... },
-    topBar = { ... },
-) { padding -> Box(Modifier.padding(padding)) { ... } }
-```
-
-`Scaffold` — реализация Material 3-структуры экрана. Под капотом это `Layout`, который размещает свои «слоты» (top bar, bottom bar, FAB, content) и считает padding для контента так, чтобы он не уезжал под them.
-
-«Slot API» означает: каждый параметр — это `@Composable () -> Unit` (или с параметрами). Ты пишешь, что положить в слот, а Scaffold сам решает где и как разместить.
-
-#### `padding: PaddingValues` в content-лямбде
-
-Scaffold вычисляет, сколько места занимают top bar / bottom bar / system bars (status bar, navigation bar), и собирает это в `PaddingValues` — структура с четырьмя сторонами (top, bottom, start, end). Дальше эта структура передаётся в content-лямбду как параметр.
-
-```kotlin
-{ padding -> Box(Modifier.padding(padding)) { ... } }
-```
-
-Если **не применить** `Modifier.padding(padding)`, контент окажется поверх bottom bar и под status bar. Это очень частый баг: «у меня LazyColumn перекрывается панелью внизу».
-
-Правильный паттерн: **всегда применять `padding`** к корневому контейнеру content'а.
-
-### `LazyVerticalGrid(GridCells.Adaptive(160.dp))` — как считается количество колонок
-
-```kotlin
-LazyVerticalGrid(
-    columns = GridCells.Adaptive(minSize = 160.dp),
-    ...
-)
-```
-
-`GridCells.Adaptive(160.dp)` — «динамически считай число колонок: положи столько, сколько влезет, при условии что каждая >= 160dp».
-
-Алгоритм при ширине экрана `W`:
-1. `n = floor(W / 160)`.
-2. Реальная ширина каждой колонки: `W / n` (плюс/минус padding).
-
-Численные примеры (без учёта padding):
-- Телефон в портретной 360dp → `floor(360/160) = 2` колонки по ~180dp.
-- Телефон в ландшафтной 720dp → `floor(720/160) = 4` колонки по ~180dp.
-- Планшет 800dp → `floor(800/160) = 5` колонок по ~160dp.
-
-Альтернатива — `GridCells.Fixed(n)`: ровно n колонок, всегда. Удобно, когда дизайн фиксированный (например, всегда 3 колонки).
-
-Подвох: `LazyVerticalGrid` нельзя помещать в родителя без ограничения высоты — он внутри использует scroll, и если высота родителя бесконечная (например, внутри `Column` без `Modifier.weight(1f)`), Compose упадёт с `IllegalStateException: Vertically scrollable component was measured with an infinity maximum height constraints`. См. подводный камень 7.
-
-### `items(items = X, key = { it.id })` — зачем ключ
-
-```kotlin
-items(items = state.albums, key = { it.id }) { album -> ... }
-```
-
-`key` — это функция, которая для каждого элемента возвращает «стабильный идентификатор». Compose использует его, чтобы понять, какой item остался прежним при изменении списка.
-
-Без ключа Compose сравнивает items по позиции в списке. Это значит:
-- Если ты вставил элемент в начало — Compose думает, что **все** items изменились (на позиции 0 теперь новый элемент, на позиции 1 — то, что было на 0, и т.д.).
-- ScrollState и анимации на этих items сбрасываются.
-
-С ключом Compose понимает: «элемент с id=5 переехал с позиции 0 на позицию 1, но это **тот же** элемент». State сохраняется, анимации работают.
-
-Правило: всегда `key` для items в `LazyColumn`/`LazyVerticalGrid`. Без него UI работает, но кривовато.
-
-### `var title by remember { mutableStateOf("") }`
-
-В диалоге создания альбома:
-
-```kotlin
-var title by remember { mutableStateOf("") }
-```
-
-Подробный разбор этой конструкции — в [`02-PERMISSIONS_AND_SCAN.md` → «Разбор по строкам» Шага 10](./02-PERMISSIONS_AND_SCAN.md). Кратко: три механизма в одной строке — `mutableStateOf` (наблюдаемый контейнер), `remember` (запоминание между рекомпозициями), `by` (property delegation, чтобы читать/писать без `.value`).
-
-В диалоге это локальное UI-state, которое не нужно сохранять в ViewModel — он живёт только пока диалог открыт. После `onCreate(title.trim())` диалог закрывается, состояние умирает.
-
-### `enableEdgeToEdge()` + `WindowInsets`
-
-```kotlin
-class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        setContent { MaterialTheme { MainScaffold() } }
-    }
-}
-```
-
-`enableEdgeToEdge()` (из `androidx.activity`) делает status bar и navigation bar **прозрачными** и позволяет контенту рисоваться под ними. Современный Material 3 дизайн именно такой — нет «полосок» по краям, всё единое.
-
-Подвох: контент теперь действительно лезет под bars, и если ты не учтёшь это, текст уедет под status bar. Решение — `WindowInsets`. `Scaffold` по умолчанию использует `contentWindowInsets = ScaffoldDefaults.contentWindowInsets`, который включает system bars. То есть `padding` в content-лямбде учтёт высоту status bar и navigation bar и поднимет контент.
-
-Если в каком-то месте нужен ручной контроль:
-
-```kotlin
-Box(Modifier.windowInsetsPadding(WindowInsets.statusBars)) {
-    Text("Заголовок не уедет под status bar")
-}
-```
-
-### `BackHandler`
-
-Системная кнопка «назад» вызывает `navController.popBackStack()`. Если надо своё поведение (например, закрыть `BottomSheet` вместо ухода с экрана) — используй:
-
-```kotlin
-BackHandler(enabled = sheetExpanded) {
-    sheetExpanded = false
-}
-```
-
-Если `enabled = false`, BackHandler не перехватывает — back уходит к навигации. Если `true` — перехватывает и выполняет лямбду вместо обычного back.
-
-### Nested NavHost vs одна графа
-
-Для простых приложений хватает одной `NavHost`. Для сложных делают nested — верхний граф для фичей (`navigation { composable<...>; composable<...> }`), внутри каждой — свой. Нам одной хватает.
-
-### Локализация — как выбирается язык
-
-Compose Resources читает `Locale.getDefault()`. На Android система локаль зависит от настроек устройства + настроек приложения (API 33+). Можешь протестировать, переключив язык системы в настройках телефона.
-
-Чтобы пользователь мог переключать прямо в приложении — `AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags("en"))` в MainActivity. В гайд не включаем, но знай про возможность.
-
-### `AsyncImage` (Coil3)
-
-```kotlin
-AsyncImage(model = album.coverUri, contentDescription = album.title)
-```
-
-Загружает изображение по URI/URL/File. Поддерживает `content://` — для наших `albumart`-URI работает. Подробнее — в файле 08.
-
-### Back stack при `navigate(Player)` с вкладки Tracks
-
-Пользователь: Tracks → клик по треку → Player. Системный "назад" — возвращает на Tracks. Выходишь из приложения — если play всё ещё играет — сервис держит процесс. Это уже поведение из файла 04.
-
----
 
 ## Подводные камни
 
