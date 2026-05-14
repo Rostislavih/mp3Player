@@ -49,6 +49,8 @@ shared/presentation/src/commonMain/kotlin/org/example/mp3player/presentation/
 
 ### Шаг 1 — `UiState`
 
+`UiState` — один data class со всеми полями экрана. Снимок «что должно быть на экране прямо сейчас». ViewModel будет выдавать `StateFlow<UiState>`, экран подписывается и рисует.
+
 ```kotlin
 // shared/presentation/src/commonMain/kotlin/org/example/mp3player/presentation/tracks/TracksUiState.kt
 package org.example.mp3player.presentation.tracks
@@ -70,9 +72,17 @@ data class TracksUiState(
 }
 ```
 
-Computed property `filteredTracks` — это простая оптимизация: нам не надо хранить отфильтрованный список отдельно, он зависит только от `tracks` и `searchQuery`. Пересчитывается на каждый рендер, но Compose умный — если результат тот же, не будет лишних перерисовок.
+Все поля с дефолтами — это «пустое» state при первой загрузке экрана. data class даёт `equals`/`hashCode` автоматически — это важно для `StateFlow.distinctUntilChanged`, чтобы не было лишних эмитов при одинаковых значениях.
+
+**`filteredTracks` — computed property.** `val ... get() = ...` это **не поле**, а функция, замаскированная под свойство. На каждый доступ к `state.filteredTracks` лямбда `get` выполняется заново.
+
+Альтернатива — хранить `filteredTracks` отдельным полем и держать его синхронным с `tracks` + `searchQuery`. Минус: где-то в `combine { ... }` забыл пересчитать → state несогласован. С computed `get()` это невозможно — функция всегда выдаёт правильный результат, выводя его из других полей.
+
+Цена: на каждый рендер `LazyColumn` Compose читает `state.filteredTracks` — фильтрация выполняется заново. На 5000 треков — несколько мс. Если профилировщик покажет, что медленно, можно мемоизировать через `remember(state.tracks, state.searchQuery) { ... }` прямо в Composable. Обычно эта оптимизация не нужна.
 
 ### Шаг 2 — `UiEvent`
+
+`UiEvent` — что пользователь может сделать на экране. Sealed interface с конкретными подтипами под каждый тип события.
 
 ```kotlin
 // shared/presentation/src/commonMain/kotlin/org/example/mp3player/presentation/tracks/TracksEvent.kt
@@ -87,9 +97,15 @@ sealed interface TracksEvent {
 }
 ```
 
-`sealed interface` — каждый экземпляр `TracksEvent` это один из перечисленных. В `when` компилятор проверит, что все ветки покрыты — забыл обработать новое событие → warning.
+`sealed interface` — каждый экземпляр `TracksEvent` это один из перечисленных. В `when` компилятор проверит, что все ветки покрыты — забыл обработать новое событие → warning или ошибка (если `when` используется как выражение).
+
+`data object Load` — события без полей (используются для команд «выполни X»). `data class Search(val query: String)` — события с данными.
 
 ### Шаг 3 — `ViewModel`
+
+ViewModel — самая сложная часть паттерна. У неё несколько ответственностей: подписаться на источники данных, скомбинировать их в `UiState`, отдавать `StateFlow` наружу, плюс обрабатывать события и слать одноразовые эффекты (toast, navigation).
+
+Создаём файл — пакет, импорты, объявление класса с DI через конструктор:
 
 ```kotlin
 // shared/presentation/src/commonMain/kotlin/org/example/mp3player/presentation/tracks/TracksViewModel.kt
@@ -108,6 +124,34 @@ class TracksViewModel(
     private val userAlbumsRepository: UserAlbumsRepository,
     private val audioPlayer: AudioPlayer,
 ) : ViewModel() {
+
+    // дальше — приватные источники state (_searchQuery, _error, _isLoading), публичный state через combine+stateIn, _effects SharedFlow, onEvent диспатчер, приватные обработчики, и sealed interface TracksEffect
+}
+```
+
+Зависимости приходят через конструктор — Koin из этапа 5 сам соберёт. ViewModel не знает про их реализацию, только про интерфейсы (`TracksRepository`, `UserAlbumsRepository`) и `AudioPlayer`.
+
+`ViewModel` из `androidx.lifecycle` — наследуемся, чтобы получить `viewModelScope`. Под капотом это `SupervisorJob + Dispatchers.Main.immediate`, который **отменяется** в `onCleared()` (когда ViewModel больше не нужна). Все корутины, запущенные в `viewModelScope.launch { ... }`, автоматически прерываются — никаких утечек.
+
+Внутрь добавляем приватные источники state — то, чем сама ViewModel «крутит» (в отличие от `observeTracks()`, который приходит из репозитория):
+
+```kotlin
+class TracksViewModel(...) : ViewModel() {
+
+    private val _searchQuery = MutableStateFlow("")
+    private val _error = MutableStateFlow<String?>(null)
+    private val _isLoading = MutableStateFlow(false)
+
+    // дальше — публичный state (combine+stateIn), _effects SharedFlow, onEvent, обработчики
+}
+```
+
+`MutableStateFlow` — контейнер с **ровно одним текущим значением** (см. подробнее в 02 Шаг 7). Подходит для UI-state: мы хотим знать «текущее значение поиска», а не «всю историю изменений».
+
+Дальше — главное: публичный `state: StateFlow<TracksUiState>` через `combine` + `stateIn`:
+
+```kotlin
+class TracksViewModel(...) : ViewModel() {
 
     private val _searchQuery = MutableStateFlow("")
     private val _error = MutableStateFlow<String?>(null)
@@ -131,8 +175,87 @@ class TracksViewModel(
         initialValue = TracksUiState(isLoading = true),
     )
 
+    // дальше — _effects SharedFlow, onEvent диспатчер, приватные обработчики, sealed interface TracksEffect
+}
+```
+
+**`combine(flowA, flowB, ...) { ... } — timing.** Что физически делает `combine`:
+
+1. Подписывается на все входные `Flow` параллельно.
+2. **Ждёт первого эмита от каждого** из них. Пока хотя бы один молчит — `combine` не эмитит.
+3. Как только все выдали хотя бы одно значение — лямбда вызывается с этими значениями, `combine` эмитит результат.
+4. Дальше: каждый раз, когда **любой** из входов эмитит новое значение, `combine` пересчитывает результат с новейшими значениями всех входов.
+
+В нашем случае все четыре источника — это либо `MutableStateFlow` с initial-value, либо `Flow` от репозитория, который через `.asStateFlow()` тоже сразу эмитит. Поэтому первый эмит `combine` практически мгновенный.
+
+Подвох: если один из источников — холодный `Flow`, который ничего не эмитит без триггера, `combine` будет тихо молчать. Не будет ошибки, не будет initial value — ничего. Симптом: `state` зависает на `initialValue` навсегда. Решение — либо использовать только `StateFlow`-источники, либо `flow.onStart { emit(...) }`.
+
+**`stateIn` — превращает `Flow` в `StateFlow`.** Чтобы понять, что делает, надо различать холодный и горячий потоки:
+
+- **Холодный (`Flow`).** Аналогия: видеокассета. Пока никто не вставил кассету и не нажал play — ничего не происходит. Каждый, кто вставит свою — увидит запись с начала.
+- **Горячий (`StateFlow`, `SharedFlow`).** Аналогия: радиоэфир. Эфир идёт всегда, независимо от слушателей. Кто включил приёмник — слышит то, что играет прямо сейчас.
+
+После `stateIn` наш `combine` уже не cold-flow. Что физически делает `stateIn`:
+
+1. Создаёт **одну upstream-корутину** в указанном `scope` — это «приёмник» исходного `Flow`.
+2. Запускает (или нет — зависит от `started`) подписку на upstream.
+3. Каждый эмит upstream'а кладёт во внутренний `MutableStateFlow.value`.
+4. Возвращает наружу `StateFlow<T>` — read-only обёртку над этим внутренним state'ом.
+
+Все downstream-подписчики (твоя UI) подписываются не на исходный `Flow` напрямую, а на этот общий `StateFlow`. Это — **ключевая** оптимизация: один upstream обслуживает многих подписчиков.
+
+**`SharingStarted` варианты:**
+
+- **`Eagerly`** — upstream-корутина стартует сразу при `stateIn`, живёт всё время, пока живёт `scope`. Для критичных данных (плеер, настройки).
+- **`Lazily`** — upstream стартует при первом подписчике, дальше живёт всё время `scope`.
+- **`WhileSubscribed(stopTimeoutMillis)`** — upstream стартует при первом подписчике; когда последний отписался, upstream живёт ещё `stopTimeoutMillis` мс, потом отменяется.
+
+Зачем `5_000` мс в `WhileSubscribed`: при повороте экрана Composable destroy → recreate занимает считанные мс. С `WhileSubscribed(0)` между двумя версиями экрана upstream бы успел умереть, и новый экран запустил бы его заново — лишняя работа. 5 секунд — типичный «зазор», достаточный для recreate, недостаточный для «юзер вернулся через минуту».
+
+`initialValue = TracksUiState(isLoading = true)` — значение, которое видит подписчик, **пока upstream ещё не выдал ничего**. Это может случиться многократно (например, после `WhileSubscribed` cancel и нового подписчика через 6 секунд — upstream стартует заново, до первого эмита подписчик видит initial).
+
+Теперь — `SharedFlow` для одноразовых эффектов (toast, навигация):
+
+```kotlin
+class TracksViewModel(...) : ViewModel() {
+
+    // state выше
+
     private val _effects = MutableSharedFlow<TracksEffect>()
     val effects: SharedFlow<TracksEffect> = _effects.asSharedFlow()
+
+    // дальше — onEvent диспатчер и приватные обработчики
+}
+```
+
+**`MutableStateFlow` vs `MutableSharedFlow` — фундаментальная разница.** В одной ViewModel используются оба:
+
+| | `MutableStateFlow<T>` | `MutableSharedFlow<T>` |
+|---|---|---|
+| Хранит «текущее значение» | Да, всегда (`.value`) | Нет |
+| Что получит новый подписчик | Текущее значение немедленно | Только то, что эмитится после подписки (если буфер 0) |
+| Можно ли «потерять» эмит | Нет, но можно «conflate» (см. ниже) | Да, если буфер 0 и нет активных подписчиков |
+| Аналогия | «Радио»: всегда что-то транслирует | «Чат»: пишешь сообщение, кто слушает — увидит |
+| Для чего | UI-state (всегда нужен «текущий вид») | Эффекты (toast, navigation) — событие происходит один раз |
+
+Почему так разделено: типичная ловушка — положить «однократное событие» в `StateFlow`. Например, `val errorMessage: StateFlow<String?>`. Пользователь увидел toast, повернул экран — composable пересоздался, подписался, получил **то же самое значение** "Ошибка" — toast показывается заново. Бесконечный цикл.
+
+Со `SharedFlow` без буфера такого не происходит: подписался **после** эмита — не увидел его. Это и нужно для эффектов.
+
+`StateFlow` всегда **conflated**: если за время, пока подписчик обрабатывает значение, ты эмитишь несколько новых — он увидит только последнее. Промежуточные **не** дойдут. Для UI это нормально (нам важен последний снимок).
+
+`MutableSharedFlow<TracksEffect>()` без аргументов — буфера нет. Если эмитить, пока никто не слушает, `emit` заблокируется (suspend) до подписчика. Безопасное поведение для эффектов: «ни одного toast не потеряем».
+
+`extraBufferCapacity = 64` — буфер на 64 события. Если буфер полон, поведение задаётся `onBufferOverflow`: `SUSPEND` / `DROP_OLDEST` / `DROP_LATEST`.
+
+`asSharedFlow()` — апкаст до read-only типа (как `asStateFlow()`).
+
+Диспатчер событий — единственная точка входа для UI:
+
+```kotlin
+class TracksViewModel(...) : ViewModel() {
+
+    // state, _effects выше
 
     fun onEvent(event: TracksEvent) {
         when (event) {
@@ -143,6 +266,21 @@ class TracksViewModel(
             is TracksEvent.AddToUserAlbum -> addToAlbum(event.trackId, event.albumId)
         }
     }
+
+    // дальше — приватные обработчики load/refresh/playTrack/addToAlbum
+}
+```
+
+`when` на `sealed interface` — компилятор проверит exhaustiveness. Добавил новое событие → ошибка компиляции, пока не добавишь ветку. Гарантирует, что все события обрабатываются.
+
+Простой случай `Search` — синхронно обновляем `_searchQuery.value`. `combine` сразу пересчитает `state`.
+
+И финал — приватные обработчики тяжёлых событий:
+
+```kotlin
+class TracksViewModel(...) : ViewModel() {
+
+    // ... всё выше ...
 
     private fun load() {
         // Первая загрузка — делегируем репозиторию, observeTracks сам эмитнет.
@@ -181,7 +319,40 @@ sealed interface TracksEffect {
 }
 ```
 
+`viewModelScope.launch` — корутина, которая отменится при `onCleared()`. Если экран закрылся в момент `refresh()` — корутина прервётся, ничего не утечёт. Если внутри цикла без suspend-точек (`while(true) { sum += 1 }`) — корутина не сможет отмениться, cancellation проверяется только в suspend-точках. Всегда `delay`/`yield`/любой `suspend`-call внутри тяжёлых циклов.
+
+**`runCatching { ... }` — ловушка с `CancellationException`.** Это Kotlin-сахар вокруг `try/catch`. Возвращает `Result<T>`, с которым удобно работать через `onSuccess`/`onFailure`.
+
+Проблема в корутинах: `runCatching` ловит **все** `Throwable`, включая `CancellationException`. А `CancellationException` — особый сигнал: «отмени корутину». Он **должен** пробрасываться вверх, иначе корутина не остановится корректно.
+
+Сценарий бага:
+1. Пользователь нажал «Refresh» → `viewModelScope.launch { runCatching { tracksRepository.refresh() } }`.
+2. Через 100 мс ушёл с экрана → `viewModelScope` отменяется.
+3. Cancellation идёт вниз: `refresh()` бросает `CancellationException`.
+4. `runCatching` ловит его и кладёт в `Result.failure(CancellationException(...))`.
+5. `onFailure` срабатывает → `_error.value = "JobCancellation: ..."`.
+6. Пользователь возвращается на экран → видит баннер с непонятной ошибкой.
+
+Правильный паттерн:
+
+```kotlin
+runCatching { tracksRepository.refresh() }
+    .onFailure { e ->
+        if (e is CancellationException) throw e   // пробрасываем дальше
+        _error.value = e.message ?: "Не удалось обновить"
+    }
+    .onSuccess { ... }
+```
+
+Или явный `try/catch (e: CancellationException) { throw e } catch (e: Exception) { ... }`. В коде выше я оставил «короткую» форму ради компактности — в реальном проекте это первое, что нужно поправить.
+
+`playTrack` — читает `state.value` (тот самый snapshot из `StateFlow`), берёт `filteredTracks`, передаёт в `audioPlayer.play(...)`. Затем эмитит `OpenPlayer` в effects — экран увидит и навигирует.
+
+`addToAlbum` — типичный паттерн «вызов с обратной связью через toast». `onSuccess`/`onFailure` эмитят сообщение пользователю.
+
 ### Шаг 4 — Подписка в Compose
+
+Экран — это `@Composable`-функция, которая подписывается на `state: StateFlow<TracksUiState>` и `effects: SharedFlow<TracksEffect>` от ViewModel, и шлёт события через `onEvent(...)`.
 
 ```kotlin
 // shared/presentation/src/commonMain/kotlin/org/example/mp3player/presentation/tracks/TracksScreen.kt
@@ -254,7 +425,74 @@ fun TracksScreen(
 }
 ```
 
+Разбираем по строкам.
+
+**`val state by viewModel.state.collectAsStateWithLifecycle()`** — подписка на `StateFlow`.
+
+`collectAsState` (из `androidx.compose.runtime`):
+- Подписывается, пока Composable в composition.
+- Когда экран ушёл в фон (Activity STOPPED), подписка **остаётся активной**.
+- Это значит: даже если экран не виден, апстрим работает, обновления приходят впустую — батарея садится.
+
+`collectAsStateWithLifecycle` (из `androidx.lifecycle:lifecycle-runtime-compose`):
+- Регистрирует `LifecycleEventObserver`.
+- При `ON_START` → подписка на flow.
+- При `ON_STOP` → подписка отменяется.
+
+Эффект: пока экран в фоне, ничего не collect'ится. Это работает в паре со `WhileSubscribed(5_000)` — оба ждут «свой» таймаут, и если экран в фоне дольше 5 секунд, апстрим тоже отменяется, до возврата.
+
+**Вывод:** для UI всегда `collectAsStateWithLifecycle`. `collectAsState` оставлен для случаев, когда lifecycle неактуален.
+
+`by` — property delegation: `state` ведёт себя как `TracksUiState`, под капотом каждое чтение идёт в `MutableState.value` (см. подробнее в 02 Шаг 10).
+
+**`LaunchedEffect(Unit) { ... }` — что физически.**
+
+`LaunchedEffect(key1) { блок }` — composable-функция, которая:
+1. При первом появлении в composition запускает корутину в специальном scope, выполняя `блок`.
+2. Если `key1` изменился между рекомпозициями — текущая корутина **отменяется**, и запускается новая.
+3. Если Composable уходит из composition — корутина отменяется.
+
+**`Unit` как ключ** — стабильное значение, которое никогда не меняется → корутина запускается ровно **один раз**, при появлении Composable.
+
+Типичная ловушка: написать `LaunchedEffect(state)`, где `state` — это твой `UiState`. Каждое изменение state создаёт новый объект (data class) → ключ меняется → корутина перезапускается на каждый эмит. Симптом: «мой эффект почему-то выполняется несколько раз».
+
+Правило: **ключ должен меняться ровно тогда, когда ты хочешь перезапустить эффект**.
+
+В нашем случае два `LaunchedEffect(Unit)`:
+- Первый — стартует первоначальную загрузку при появлении экрана.
+- Второй — подписывается на `effects` через `collectLatest` и реагирует на каждый эффект.
+
+**`collectLatest` vs `collect`.**
+
+`collect { блок }`:
+- Получает значение → выполняет блок → ждёт следующего значения.
+- Если в `блок` стоит `delay(1000)` и за это время пришли 5 эмитов — все 5 будут обработаны последовательно (с паузами).
+
+`collectLatest { блок }`:
+- Получает значение → запускает блок в новой корутине.
+- Если пришёл новый эмит, **пока блок ещё работает** — текущий блок отменяется, новый эмит запускается с нуля.
+
+В нашем случае `collectLatest` для эффектов — спорный выбор: если за время показа toast пришёл новый — мы **отменим** показ старого. Чаще для эффектов хочется видеть **все** эмиты по порядку → `collect`.
+
+Где `collectLatest` действительно нужен:
+- Дебаунс: на каждый ввод текста перезапускать поиск, отменяя предыдущий.
+- Загрузка изображения: пользователь свайпнул → отменить загрузку прошлой.
+
+```kotlin
+searchQuery.collectLatest { query ->
+    delay(300)            // пользователь продолжает печатать → отмена
+    val results = api.search(query)
+    _results.value = results
+}
+```
+
+Тело `TracksScreen` — стандартный pattern «один большой `when`, который выбирает что показать по состоянию». `state.isLoading && state.tracks.isEmpty()` — спиннер показываем только при **первой** загрузке (когда треков ещё нет). На последующих refresh'ах треки уже есть — пользователь увидит баннер или старый список.
+
+`itemsIndexed` — вариант `items` с индексом, нужен потому что `TracksEvent.PlayTrack` принимает `index`. UI-слой просто передаёт его, не зная про логику.
+
 ### Шаг 5 — `PlayerViewModel` с несколькими источниками
+
+`PlayerViewModel` проще — у нас уже есть готовый `audioPlayer.state: StateFlow<PlaybackState>` (из этапа 4). ViewModel просто мапит его в `PlayerUiState` для экрана. Никакого `combine` — один источник.
 
 ```kotlin
 // shared/presentation/src/commonMain/kotlin/org/example/mp3player/presentation/player/PlayerViewModel.kt
@@ -338,283 +576,16 @@ private fun formatDuration(ms: Long): String {
 }
 ```
 
+В цепочке `audioPlayer.state.map { it.toUi() }.stateIn(...)` `.map` — это **`Flow.map`** (импорт `kotlinx.coroutines.flow.map`), не `List.map`. Принимает лямбду `(T) -> R` и возвращает новый `Flow<R>`, который применяет лямбду к каждому upstream-эмиту. Сравнение с `List.map` подробно — в `02-PERMISSIONS_AND_SCAN.md`, Шаг 8.
+
+Лайфхак: если в импортах файла нет `kotlinx.coroutines.flow.map`, но `.map` всё равно компилируется — IDE предлагает auto-import. Проверь, что взялся именно `Flow.map`, а не `List.map` (если в receiver случайно `List`).
+
+`PlayerUiState` имеет computed `positionText`/`durationText` — тот же паттерн, что в `TracksUiState.filteredTracks` (см. Шаг 1).
+
+`SeekToFraction` — пример события «преобразовать UI-input во внутреннюю единицу». В Slider Material 3 значение — `0f..1f`; ViewModel вычисляет миллисекунды через `(duration * fraction).toLong()`.
+
 ---
 
-## Разбор
-
-### `MutableStateFlow` vs `MutableSharedFlow` — фундаментальная разница
-
-В этом ViewModel используются оба, и важно понимать, чем они отличаются концептуально.
-
-| | `MutableStateFlow<T>` | `MutableSharedFlow<T>` |
-|---|---|---|
-| Хранит «текущее значение» | Да, всегда (`.value`) | Нет |
-| Что получит новый подписчик | Текущее значение немедленно | Только то, что эмитится после подписки (если буфер 0) |
-| Можно ли «потерять» эмит | Нет, но можно «conflate» (см. ниже) | Да, если буфер 0 и нет активных подписчиков |
-| Аналогия | «Радио»: всегда что-то транслирует | «Чат»: пишешь сообщение, кто слушает — увидит |
-| Для чего | UI-state (всегда нужен «текущий вид») | Эффекты (toast, navigation) — событие происходит один раз |
-
-Почему так разделено: типичная ловушка новичка — положить «однократное событие» в `StateFlow`. Например, `val errorMessage: StateFlow<String?>`. Пользователь увидел toast, повернул экран — composable пересоздался, подписался на `StateFlow`, получил **то же самое значение** "Ошибка" — и toast показывается заново. Бесконечный цикл багов.
-
-Со `SharedFlow` (без буфера) такого не происходит: подписался **после** эмита — не увидел его. Это и нужно для эффектов.
-
-#### `conflated` поведение `StateFlow`
-
-`StateFlow` всегда conflated: если за время, пока подписчик обрабатывает значение, ты эмитишь несколько новых — он увидит только последнее. Промежуточные **не** дойдут до подписчика. Для UI это нормально (нам важен последний снимок), но если нужно «не пропустить ни одного значения» — нужен `SharedFlow` с подходящим буфером.
-
-#### `extraBufferCapacity` у `SharedFlow`
-
-`MutableSharedFlow(extraBufferCapacity = 0)` — без буфера. Если эмитить, пока никто не слушает — emit заблокируется (suspend), пока не появится подписчик и не заберёт значение. Это безопасное поведение для эффектов: «ни одного toast не потеряем».
-
-`extraBufferCapacity = 64` — буфер на 64 события. Если буфер заполнен и пришёл новый emit — поведение задаётся `onBufferOverflow`: `SUSPEND` (ждать), `DROP_OLDEST`, `DROP_LATEST`.
-
-В нашем `_effects = MutableSharedFlow<TracksEffect>()` буфера нет — этого хватает: эффекты редкие, подписчик активный.
-
-### `combine(flowA, flowB, ...) { a, b, ... -> ... }` — timing
-
-```kotlin
-combine(
-    tracksRepository.observeTracks(),
-    _searchQuery,
-    _isLoading,
-    _error,
-) { tracks, query, loading, error -> TracksUiState(...) }
-```
-
-Что физически делает `combine`:
-
-1. Подписывается на все входные `Flow` параллельно.
-2. **Ждёт первого эмита от каждого** из них. Пока хотя бы один молчит — `combine` не эмитит.
-3. Как только все выдали хотя бы одно значение — лямбда вызывается с этими значениями, `combine` эмитит результат.
-4. Дальше: каждый раз, когда **любой** из входов эмитит новое значение, `combine` пересчитывает результат с новейшими значениями всех входов.
-
-В нашем случае все четыре источника — это либо `MutableStateFlow` с `initialValue` (тут же эмитят начальное), либо `Flow` от репозитория, который через `.asStateFlow()` тоже сразу эмитит. Поэтому первый эмит `combine` практически мгновенный.
-
-Подвох, если один из источников — холодный `Flow`, который ничего не эмитит без триггера: `combine` будет тихо молчать. Не будет ошибки, не будет initial value — ничего. Симптом: `state` зависает на `initialValue` навсегда. Решение — либо использовать только `StateFlow`-источники, либо `flow.onStart { emit(...) }` для гарантированного первого значения.
-
-### `viewModelScope` — откуда и когда умирает
-
-```kotlin
-viewModelScope.launch { ... }
-```
-
-`viewModelScope` — это extension-property у `androidx.lifecycle.ViewModel`, объявленная в `lifecycle-viewmodel-ktx`:
-
-```kotlin
-public val ViewModel.viewModelScope: CoroutineScope
-    get() = this.getTag(JOB_KEY) ?: setTagIfAbsent(JOB_KEY, CloseableCoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
-```
-
-Что важно:
-- Scope привязан к `ViewModel`. У каждой ViewModel свой.
-- Под капотом — `SupervisorJob` + `Dispatchers.Main.immediate`. `Supervisor` означает, что падение одной дочерней корутины не убивает остальные. `Main.immediate` — оптимизация: если уже на main, не диспатчиться через очередь.
-- В `ViewModel.onCleared()` (вызывается, когда ViewModel больше не нужна) scope **отменяется**. Все запущенные `viewModelScope.launch { ... }` падают с `CancellationException`, ресурсы освобождаются.
-
-Это значит: если в `viewModelScope.launch { while(true) { ... } }` ты накодил бесконечный цикл — он **не утечёт**. При выходе с экрана ViewModel умрёт, scope отменится, цикл прервётся.
-
-Но: если внутри цикла ты не уважаешь cancellation (не делаешь `delay()` или другую suspend-функцию) — корутина не сможет отмениться. `while(true) { sum += 1 }` в `viewModelScope` — утечка, потому что cancellation проверяется только в suspend-точках. Всегда `delay`/`yield`/любой `suspend`-call внутри тяжёлых циклов.
-
-### `stateIn` — глубокий разбор
-
-```kotlin
-.stateIn(
-    scope = viewModelScope,
-    started = SharingStarted.WhileSubscribed(5_000),
-    initialValue = TracksUiState(isLoading = true),
-)
-```
-
-Превращает любой `Flow<T>` в `StateFlow<T>`. Чтобы понять, что физически происходит, нужно сначала понять разницу холодного и горячего потоков.
-
-#### Холодный vs горячий поток
-
-- **Холодный (`Flow`).** Аналогия: видеокассета. Пока никто не вставил кассету и не нажал play — ничего не происходит. Каждый, кто вставит свою кассету, увидит запись с начала.
-- **Горячий (`StateFlow`, `SharedFlow`).** Аналогия: радиоэфир. Эфир идёт всегда, независимо от слушателей. Кто включил приёмник — слышит то, что играет прямо сейчас.
-
-`tracksRepository.observeTracks()` после `stateIn` уже не cold-flow. Оно «горячее» внутри `viewModelScope`.
-
-#### Что физически делает `stateIn`
-
-1. Создаёт **одну upstream-корутину** в указанном `scope` — это и есть «приёмник» исходного `Flow`.
-2. Запускает (или нет — зависит от `started`) подписку на upstream.
-3. Каждый эмит upstream'а кладёт в внутренний `MutableStateFlow.value`.
-4. Возвращает наружу `StateFlow<T>` — read-only обёртку над этим внутренним state'ом.
-
-Все downstream-подписчики (твоя UI) подписываются не на исходный `Flow` напрямую, а на этот общий `StateFlow`. Это — **ключевая** оптимизация: один upstream обслуживает многих подписчиков.
-
-#### `SharingStarted` варианты
-
-- **`Eagerly`** — upstream-корутина стартует сразу при `stateIn`, живёт всё время, пока живёт `scope`. Удобно для критичных данных (плеер, настройки), которые должны быть готовы мгновенно.
-- **`Lazily`** — upstream стартует при появлении первого подписчика, дальше живёт всё время `scope`. Промежуточный вариант: «не запускай зря, но потом не отписывайся».
-- **`WhileSubscribed(stopTimeoutMillis)`** — upstream стартует при первом подписчике; когда последний подписчик отписался, upstream продолжает работать ещё `stopTimeoutMillis` мс, и если за это время никто не подписался обратно — отменяется.
-
-Зачем 5_000 мс в `WhileSubscribed`: при повороте экрана Composable destroy → recreate занимает считанные мс. Если бы стояло `WhileSubscribed(0)`, между двумя версиями экрана upstream бы успел умереть, и новый экран запустил бы upstream заново — лишняя работа (повторное сканирование, новый запрос к Room и т.п.). 5 секунд — типичный «зазор», достаточный для recreate, недостаточный для «юзер вернулся с другого экрана через минуту».
-
-#### Что произойдёт, если 6 секунд без подписчиков, потом новый
-
-Сценарий с `WhileSubscribed(5_000)`:
-1. `t=0`: подписчик ушёл. Upstream живёт.
-2. `t=5000`: за 5 секунд никто не подписался. Upstream cancel'ится.
-3. `t=6000`: появился новый подписчик. Upstream стартует **заново**. Подписчик сначала видит `initialValue` (или последнее значение, если оно было — зависит от того, не сбросило ли его cancel).
-
-Поэтому `initialValue` — не «значение в самом начале и забудь», а «значение, которое видит подписчик, когда апстрим ещё не выдал ничего» — это может случиться многократно.
-
-### `collectAsStateWithLifecycle` vs `collectAsState`
-
-`collectAsState` (из `androidx.compose.runtime`):
-- Подписывается, пока Composable в composition.
-- Когда экран ушёл в фон (Activity STOPPED), подписка **остаётся активной**.
-- Это значит: даже если экран не виден, апстрим работает, обновления приходят впустую — батарея садится.
-
-`collectAsStateWithLifecycle` (из `androidx.lifecycle:lifecycle-runtime-compose`):
-- Регистрирует `LifecycleEventObserver`.
-- При `ON_START` → подписка на flow.
-- При `ON_STOP` → подписка отменяется.
-- Возвращает обратно к `ON_START`.
-
-Эффект: пока экран в фоне, ничего не collect'ится. Это работает в паре со `WhileSubscribed(5_000)` — оба ждут «свой» таймаут, и если экран в фоне дольше 5 секунд, апстрим тоже отменяется, до возврата.
-
-**Вывод:** для UI всегда `collectAsStateWithLifecycle`. `collectAsState` оставлен в API из соображений совместимости и для случаев, когда lifecycle неактуален.
-
-### `LaunchedEffect(key)` — что физически
-
-```kotlin
-LaunchedEffect(Unit) {
-    viewModel.onEvent(TracksEvent.Load)
-}
-```
-
-`LaunchedEffect(key1) { блок }` — composable-функция, которая:
-1. При первом появлении в composition запускает корутину в специальном scope, выполняя `блок`.
-2. Если `key1` изменился между рекомпозициями — текущая корутина **отменяется**, и запускается новая.
-3. Если Composable уходит из composition — корутина отменяется.
-
-**`Unit` как ключ** — стабильное значение, которое никогда не меняется → корутина запускается ровно **один раз**, при появлении Composable.
-
-Типичная ловушка: написать `LaunchedEffect(state)`, где `state` — это твой `UiState`. Каждое изменение state создаёт новый объект (data class) → ключ меняется → корутина перезапускается на каждый эмит. Симптом: «мой эффект почему-то выполняется несколько раз».
-
-Правило: **ключ должен меняться ровно тогда, когда ты хочешь перезапустить эффект**. Не чаще.
-
-`LaunchedEffect(key1, key2, ...)` — несколько ключей, корутина перезапускается при изменении любого.
-
-### `collectLatest` vs `collect`
-
-```kotlin
-viewModel.effects.collectLatest { effect -> ... }
-```
-
-`collect { блок }`:
-- Получает значение → выполняет блок → ждёт следующего значения.
-- Если в `блок` стоит `delay(1000)` и за это время пришли 5 эмитов — все 5 будут обработаны последовательно (с паузами).
-
-`collectLatest { блок }`:
-- Получает значение → запускает блок в новой корутине.
-- Если пришёл новый эмит, **пока блок ещё работает** — текущий блок отменяется, новый эмит запускается с нуля.
-
-В нашем случае `collectLatest` для эффектов — спорный выбор: если за время показа toast пришёл новый — мы **отменим** показ старого. Чаще для эффектов хочется видеть **все** эмиты по порядку → `collect`.
-
-Где `collectLatest` действительно нужен:
-- Дебаунс: на каждый ввод текста перезапускать поиск, отменяя предыдущий.
-- Загрузка изображения: пользователь свайпнул → отменить загрузку прошлой картинки.
-
-```kotlin
-searchQuery.collectLatest { query ->
-    delay(300)            // пользователь продолжает печатать → отмена
-    val results = api.search(query)
-    _results.value = results
-}
-```
-
-### `runCatching { ... }` — ловушка с `CancellationException`
-
-```kotlin
-runCatching { tracksRepository.refresh() }
-    .onSuccess { ... }
-    .onFailure { ... }
-```
-
-`runCatching` — Kotlin-сахар вокруг `try/catch`. Возвращает `Result<T>`, с которым можно цепочкой через `onSuccess`/`onFailure`/`map`/`recover`.
-
-**Проблема в корутинах:** `runCatching` ловит **все** `Throwable`, включая `CancellationException`. А `CancellationException` — это особый сигнал: «отмени корутину». Он **должен** пробрасываться вверх, иначе корутина не остановится корректно.
-
-Сценарий бага:
-1. Пользователь нажал «Refresh» → `viewModelScope.launch { ... runCatching { tracksRepository.refresh() } ... }`.
-2. Через 100 мс пользователь ушёл с экрана → `viewModelScope` отменяется.
-3. Cancellation идёт вниз: `refresh()` бросает `CancellationException`.
-4. `runCatching` **ловит** его и кладёт в `Result.failure(CancellationException(...))`.
-5. `onFailure` срабатывает → `_error.value = "JobCancellation: ..."`.
-6. Пользователь возвращается на экран → видит баннер с непонятной ошибкой.
-
-Правильный паттерн:
-
-```kotlin
-runCatching { tracksRepository.refresh() }
-    .onFailure { e ->
-        if (e is CancellationException) throw e   // пробрасываем дальше
-        _error.value = e.message ?: "Не удалось обновить"
-    }
-    .onSuccess { ... }
-```
-
-Или явный `try/catch (e: Exception)` (он не ловит `CancellationException`, потому что в kotlinx-coroutines `CancellationException` — это `IllegalStateException`-подобное, и формально оно `Exception`, поэтому проверять надо специально):
-
-```kotlin
-try {
-    tracksRepository.refresh()
-} catch (e: CancellationException) {
-    throw e
-} catch (e: Exception) {
-    _error.value = e.message
-}
-```
-
-В коде гайда выше я оставил «короткую» форму ради компактности — но в реальном проекте это первое, что нужно поправить.
-
-### Почему computed property, а не держать поле?
-
-```kotlin
-data class TracksUiState(
-    val tracks: List<Track>,
-    val searchQuery: String,
-) {
-    val filteredTracks: List<Track> get() = if (searchQuery.isBlank()) tracks
-        else tracks.filter { ... }
-}
-```
-
-`val ... get() = ...` — это **computed property**: не поле, а функция, замаскированная под свойство. На каждый доступ к `state.filteredTracks` лямбда `get` выполняется заново.
-
-Альтернатива:
-
-```kotlin
-data class TracksUiState(
-    val allTracks: List<Track>,
-    val filteredTracks: List<Track>,  // должен быть синхронен с allTracks + searchQuery
-    val searchQuery: String,
-)
-```
-
-Со вторым вариантом надо **руками** следить, чтобы `filteredTracks` был действительно `filter(allTracks, searchQuery)`. Где-то в `combine { ... }` забыл пересчитать → state несогласован.
-
-С computed `get()` это **невозможно** — функция всегда выдаёт правильный результат, выводя его из других полей.
-
-Цена: на каждый рендер `LazyColumn` Compose читает `state.filteredTracks` — фильтрация выполняется заново. На 5000 треков — несколько мс. Если профилировщик показал, что это медленно, можно мемоизировать через `remember(state.tracks, state.searchQuery) { state.tracks.filter { ... } }` прямо в Composable. Но обычно эта оптимизация не нужна.
-
-### `Flow<X>.map { it.toUi() }` — это `Flow.map`, не `List.map`
-
-```kotlin
-val state: StateFlow<PlayerUiState> = audioPlayer.state
-    .map { it.toUi() }
-    .stateIn(...)
-```
-
-Здесь `.map` — это `Flow.map` (импорт `kotlinx.coroutines.flow.map`). Он принимает лямбду `(T) -> R` и возвращает новый `Flow<R>`, который применяет лямбду к каждому upstream-эмиту.
-
-Не путай с `List<T>.map { ... }: List<R>` — это синхронная трансформация коллекции (см. подробное сравнение в [`02-PERMISSIONS_AND_SCAN.md` → «Разбор по строкам» Шага 8](./02-PERMISSIONS_AND_SCAN.md#разбор-по-строкам)).
-
-Лайфхак: если в импортах файла нет `kotlinx.coroutines.flow.map`, но `.map` всё равно компилируется — IDE мне предлагает auto-import. Проверь, что взялся именно `Flow.map`, а не `List.map` (если в receiver случайно List).
-
----
 
 ## Подводные камни
 
