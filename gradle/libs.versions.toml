@@ -29,6 +29,7 @@ coroutines = "1.10.2"
 ksp = "2.3.0"
 coil = "3.4.0"
 kotlinx-datetime = "0.6.0"
+roomKtx = "2.8.4"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -66,6 +67,7 @@ androidx-room-sqlite-wrapper = { group = "androidx.room", name = "room-sqlite-wr
 coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }
 coil-ktor3 = { group = "io.coil-kt.coil3", name = "coil-network-ktor3", version.ref = "coil" }
 kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinx-datetime" }
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "roomKtx" }
 
 
 [plugins]

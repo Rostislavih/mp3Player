@@ -19,6 +19,8 @@ kotlin {
     sourceSets {
         commonMain {
             dependencies {
+                implementation(project(":shared:domain"))
+                implementation(libs.kotlinx.coroutines.core)
                 implementation(project.dependencies.platform(libs.koin.bom))
                 implementation(libs.koin.core)
                 implementation(libs.kotlinx.serialization.json)
@@ -32,6 +34,8 @@ kotlin {
             dependencies {
 
                 implementation(libs.androidx.room.sqlite.wrapper)
+                implementation(libs.androidx.room.ktx)
+                implementation(libs.androidx.room.runtime)
             }
         }
         iosMain {
