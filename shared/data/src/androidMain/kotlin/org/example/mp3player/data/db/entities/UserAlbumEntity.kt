@@ -10,5 +10,4 @@ data class UserAlbumEntity(
     val description: String = "",
     val coverUri: String? = null,
     val createdAt: Long,
-    val trackIds: List<String>,
 )

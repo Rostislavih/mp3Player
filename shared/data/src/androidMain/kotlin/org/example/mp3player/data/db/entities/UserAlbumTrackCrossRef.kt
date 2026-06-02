@@ -18,7 +18,7 @@ data class UserAlbumTrackCrossRef(
 )
 
 data class UserAlbumWithTrackIds(
-    @Embedded val userAlbum: UserAlbumEntity,
+    @Embedded val album: UserAlbumEntity,
     @Relation(
         parentColumn = "id",
         entityColumn = "trackId",

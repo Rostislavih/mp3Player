@@ -36,6 +36,9 @@ kotlin {
                 implementation(libs.androidx.room.sqlite.wrapper)
                 implementation(libs.androidx.room.ktx)
                 implementation(libs.androidx.room.runtime)
+                implementation(libs.androidx.remote.creation.core)
+                implementation(libs.androidx.media3.exoplayer)
+                implementation(libs.androidx.media3.session)
             }
         }
         iosMain {
