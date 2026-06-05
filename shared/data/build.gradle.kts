@@ -39,6 +39,7 @@ kotlin {
                 implementation(libs.androidx.remote.creation.core)
                 implementation(libs.androidx.media3.exoplayer)
                 implementation(libs.androidx.media3.session)
+                implementation(libs.koin.android)
             }
         }
         iosMain {

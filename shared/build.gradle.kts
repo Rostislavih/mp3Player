@@ -30,8 +30,9 @@ kotlin {
                 implementation(libs.compose.components.resources)
                 implementation(libs.compose.uiToolingPreview)
 
-                implementation(projects.shared.data)
-                implementation(projects.shared.presentation)
+                api(projects.shared.data)
+                api(projects.shared.presentation)
+                api(projects.shared.domain)
             }
         }
     }
