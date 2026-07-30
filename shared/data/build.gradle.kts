@@ -26,7 +26,6 @@ kotlin {
                 implementation(libs.kotlinx.serialization.json)
                 implementation(libs.androidx.room.runtime)
                 implementation(libs.androidx.sqlite.bundled)
-
                 implementation(projects.shared.domain)
             }
         }
@@ -36,9 +35,6 @@ kotlin {
                 implementation(libs.androidx.room.sqlite.wrapper)
                 implementation(libs.androidx.room.ktx)
                 implementation(libs.androidx.room.runtime)
-                implementation(libs.androidx.remote.creation.core)
-                implementation(libs.androidx.media3.exoplayer)
-                implementation(libs.androidx.media3.session)
                 implementation(libs.koin.android)
             }
         }

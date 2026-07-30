@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.androidKotlinMultiplatformLibrary)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.composeMultiplatform)
+    alias(libs.plugins.kotlinx.serialization)
 }
 
 kotlin {
@@ -26,6 +27,7 @@ kotlin {
                 implementation(libs.compose.runtime)
                 implementation(libs.compose.foundation)
                 implementation(libs.compose.material3)
+                implementation(compose.materialIconsExtended)
                 implementation(libs.compose.ui)
                 implementation(libs.compose.components.resources)
                 implementation(libs.compose.uiToolingPreview)
@@ -35,9 +37,16 @@ kotlin {
                 implementation(libs.kotlinx.datetime)
                 implementation(libs.coil.compose)
                 implementation(libs.coil.ktor3)
+                implementation(libs.androidx.navigation.compose)
+                implementation(libs.kotlinx.serialization.json)
 
                 implementation(projects.shared.domain)
             }
         }
     }
+}
+
+compose.resources {
+    publicResClass = true
+    packageOfResClass = "org.example.mp3player.presentation.resources"
 }

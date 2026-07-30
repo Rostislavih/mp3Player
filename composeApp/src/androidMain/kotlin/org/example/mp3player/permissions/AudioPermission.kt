@@ -6,13 +6,13 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
-import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import androidx.compose.ui.platform.LocalContext
 
-enum class AudioPermission { Granted, Denied, Unknown }
+enum class AudioPermissionState { Granted, Denied, Unknown }
 
 @Composable
-fun rememberAudioPermissionState(): Pair<AudioPermission, () -> Unit> {
+fun rememberAudioPermissionState(): Pair<AudioPermissionState, () -> Unit> {
     val context = LocalContext.current
     val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         Manifest.permission.READ_MEDIA_AUDIO
@@ -24,15 +24,15 @@ fun rememberAudioPermissionState(): Pair<AudioPermission, () -> Unit> {
         mutableStateOf(
             if (ContextCompat.checkSelfPermission(context, permission)
                 == PackageManager.PERMISSION_GRANTED
-            ) AudioPermission.Granted
-            else AudioPermission.Unknown
+            ) AudioPermissionState.Granted
+            else AudioPermissionState.Unknown
         )
     }
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        state = if (granted) AudioPermission.Granted else AudioPermission.Denied
+        state = if (granted) AudioPermissionState.Granted else AudioPermissionState.Denied
     }
 
     val request = remember(launcher) { { launcher.launch(permission) } }

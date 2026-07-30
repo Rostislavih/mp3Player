@@ -1,6 +1,6 @@
 package org.example.mp3player.shared.di
 
+import org.example.mp3player.data.di.iosDataModule
 import org.koin.core.module.Module
-import org.koin.dsl.module
 
-actual fun getPlatformModule(): Module = module { }
+actual fun getPlatformModule(): Module = iosDataModule

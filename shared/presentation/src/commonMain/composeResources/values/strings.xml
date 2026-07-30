@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Музыка</string>
+
+    <string name="tab_tracks">Треки</string>
+    <string name="tab_albums">Альбомы</string>
+    <string name="tab_my_albums">Мои альбомы</string>
+
+    <string name="tracks_search_hint">Поиск</string>
+    <string name="tracks_empty_title">Нет музыки</string>
+    <string name="tracks_empty_description">Добавь треки на устройство и обнови</string>
+    <string name="tracks_no_results">Ничего не найдено</string>
+
+    <string name="albums_empty">Альбомы появятся после сканирования</string>
+
+    <string name="user_albums_empty_title">Создай свой первый альбом</string>
+    <string name="user_albums_empty_description">Добавляй треки из библиотеки</string>
+    <string name="user_albums_create">Создать альбом</string>
+    <string name="user_album_dialog_title">Новый альбом</string>
+    <string name="user_album_dialog_name_hint">Название</string>
+    <string name="user_album_dialog_create">Создать</string>
+    <string name="user_album_dialog_cancel">Отмена</string>
+
+    <string name="player_previous">Предыдущий</string>
+    <string name="player_next">Следующий</string>
+    <string name="player_play">Играть</string>
+    <string name="player_pause">Пауза</string>
+
+    <string name="action_refresh">Обновить</string>
+    <string name="action_retry">Попробовать ещё раз</string>
+    <string name="action_add_to_album">Добавить в альбом</string>
+    <string name="action_remove_from_album">Убрать из альбома</string>
+
+    <string name="error_loading">Не удалось загрузить</string>
+    <string name="permission_needed_title">Нужен доступ к музыке</string>
+    <string name="permission_needed_description">Без разрешения приложение не видит ваши треки</string>
+    <string name="permission_grant">Разрешить</string>
+</resources>
