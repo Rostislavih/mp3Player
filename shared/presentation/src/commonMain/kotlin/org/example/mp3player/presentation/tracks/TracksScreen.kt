@@ -18,12 +18,19 @@ import org.example.mp3player.presentation.common.EmptyState
 import org.example.mp3player.presentation.common.ErrorBanner
 import org.example.mp3player.presentation.common.LoadingBox
 import org.example.mp3player.presentation.common.TrackRow
+import org.example.mp3player.presentation.resources.Res
+import org.example.mp3player.presentation.resources.tracks_empty_description
+import org.example.mp3player.presentation.resources.tracks_empty_title
+import org.example.mp3player.presentation.resources.tracks_no_results
+import org.example.mp3player.presentation.resources.tracks_search_hint
+import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
 
 @Composable
 fun TracksScreen(
     onOpenPlayer: () -> Unit,
     onSnackbar: (String) -> Unit,
+    modifier: Modifier = Modifier,
     viewModel: TracksViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -47,11 +54,13 @@ fun TracksScreen(
         is TracksUiState.Error -> ErrorBanner(
             message = current.errorText,
             onRetry = { viewModel.onEvent(TracksEvent.Refresh) },
+            modifier = modifier,
         )
 
         is TracksUiState.Content -> TracksContent(
             state = current,
             onEvent = viewModel::onEvent,
+            modifier = modifier,
         )
     }
 }
@@ -60,12 +69,13 @@ fun TracksScreen(
 private fun TracksContent(
     state: TracksUiState.Content,
     onEvent: (TracksEvent) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
             value = state.searchQuery,
             onValueChange = { onEvent(TracksEvent.Search(it)) },
-            placeholder = { Text("Поиск") },
+            placeholder = { Text(stringResource(Res.string.tracks_search_hint)) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(16.dp),
         )
@@ -73,11 +83,11 @@ private fun TracksContent(
         val tracks = state.filteredTracks
         when {
             state.tracks.isEmpty() -> EmptyState(
-                title = "Нет музыки",
-                description = "Добавь треки на устройство и обнови",
+                title = stringResource(Res.string.tracks_empty_title),
+                description = stringResource(Res.string.tracks_empty_description),
             )
 
-            tracks.isEmpty() -> EmptyState(title = "Ничего не найдено")
+            tracks.isEmpty() -> EmptyState(title = stringResource(Res.string.tracks_no_results))
 
             else -> LazyColumn(Modifier.fillMaxSize()) {
                 itemsIndexed(

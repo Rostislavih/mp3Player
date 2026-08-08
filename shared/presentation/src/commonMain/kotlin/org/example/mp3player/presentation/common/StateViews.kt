@@ -14,6 +14,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import org.example.mp3player.presentation.resources.Res
+import org.example.mp3player.presentation.resources.action_retry
+import org.jetbrains.compose.resources.stringResource
 
 /** Спиннер по центру свободного места. */
 @Composable
@@ -31,8 +34,8 @@ fun LoadingBox(modifier: Modifier = Modifier) {
 fun ErrorBanner(
     message: String,
     onRetry: () -> Unit,
-    retryText: String = "Попробовать ещё раз",
     modifier: Modifier = Modifier,
+    retryText: String = stringResource(Res.string.action_retry),
 ) {
     Column(
         modifier = modifier.fillMaxSize().padding(24.dp),

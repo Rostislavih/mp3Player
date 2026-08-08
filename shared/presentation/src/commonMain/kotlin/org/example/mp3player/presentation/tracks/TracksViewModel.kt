@@ -3,6 +3,7 @@ package org.example.mp3player.presentation.tracks
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -15,6 +16,11 @@ import kotlinx.coroutines.launch
 import org.example.mp3player.core.audio.player.AudioPlayer
 import org.example.mp3player.domain.repository.TracksRepository
 import org.example.mp3player.domain.repository.UserAlbumsRepository
+import org.example.mp3player.presentation.resources.Res
+import org.example.mp3player.presentation.resources.add_to_album_done
+import org.example.mp3player.presentation.resources.failed
+import org.example.mp3player.presentation.resources.failed_to_update
+import org.jetbrains.compose.resources.getString
 
 class TracksViewModel(
     private val tracksRepository: TracksRepository,
@@ -70,16 +76,23 @@ class TracksViewModel(
         refresh()
     }
 
+    private var refreshJob: Job? = null
+
     private fun refresh() {
-        viewModelScope.launch {
+        if (refreshJob?.isActive == true) return  // или cancelAndJoin(), если нужен restart
+
+        refreshJob = viewModelScope.launch {
             _isLoading.value = true
             _error.value = null
-            runCatching { tracksRepository.refresh() }
-                .onFailure { e ->
-                    if (e is CancellationException) throw e
-                    _error.value = e.message ?: "Не удалось обновить"
-                }
-            _isLoading.value = false
+            try {
+                tracksRepository.refresh()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _error.value = e.message ?: getString(Res.string.failed_to_update)
+            } finally {
+                _isLoading.value = false
+            }
         }
     }
 
@@ -94,10 +107,10 @@ class TracksViewModel(
     private fun addToAlbum(trackId: String, albumId: Long) {
         viewModelScope.launch {
             runCatching { userAlbumsRepository.addTrack(albumId, trackId) }
-                .onSuccess { _effects.emit(TracksEffect.ShowMessage("Добавлено")) }
+                .onSuccess { _effects.emit(TracksEffect.ShowMessage(getString(Res.string.add_to_album_done))) }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    _effects.emit(TracksEffect.ShowMessage("Ошибка: ${e.message}"))
+                    _effects.emit(TracksEffect.ShowMessage(getString(Res.string.failed) + ": ${e.message}"))
                 }
         }
     }

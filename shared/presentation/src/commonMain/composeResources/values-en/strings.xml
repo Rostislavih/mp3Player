@@ -12,27 +12,33 @@
     <string name="tracks_no_results">Nothing matches</string>
 
     <string name="albums_empty">Albums will appear after scanning</string>
+    <string name="album_details_play_all">Play all</string>
+    <string name="album_details_not_found">Album not found</string>
+    <string name="album_tracks_count">Tracks: %1$d</string>
 
     <string name="user_albums_empty_title">Create your first album</string>
     <string name="user_albums_empty_description">Add tracks from your library</string>
     <string name="user_albums_create">Create album</string>
+    <string name="user_album_delete">Delete album</string>
     <string name="user_album_dialog_title">New album</string>
     <string name="user_album_dialog_name_hint">Title</string>
     <string name="user_album_dialog_create">Create</string>
     <string name="user_album_dialog_cancel">Cancel</string>
+    <string name="add_to_album">Add to album</string>
+    <string name="add_to_album_title">Which album?</string>
+    <string name="add_to_album_empty">Create an album on the “My albums” tab first</string>
+    <string name="add_to_album_done">Added</string>
 
     <string name="player_previous">Previous</string>
     <string name="player_next">Next</string>
     <string name="player_play">Play</string>
     <string name="player_pause">Pause</string>
+    <string name="player_close">Collapse</string>
+    <string name="player_nothing">Nothing is playing</string>
 
-    <string name="action_refresh">Refresh</string>
+    <string name="action_back">Back</string>
     <string name="action_retry">Try again</string>
-    <string name="action_add_to_album">Add to album</string>
-    <string name="action_remove_from_album">Remove from album</string>
 
-    <string name="error_loading">Failed to load</string>
-    <string name="permission_needed_title">Music access needed</string>
-    <string name="permission_needed_description">Without permission the app cannot see your tracks</string>
-    <string name="permission_grant">Grant</string>
+    <string name="failed_to_update">failed to update</string>
+    <string name="failed">Failed</string>
 </resources>
