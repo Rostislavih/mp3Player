@@ -76,7 +76,6 @@ actual class AudioPlayer(
     }
 
     private fun startPositionPolling() {
-        // Плеер не эмитит тик за тиком — полим позицию, пока играет.
         scope.launch {
             while (true) {
                 val ctrl = controller

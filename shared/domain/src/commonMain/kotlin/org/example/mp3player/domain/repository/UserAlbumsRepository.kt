@@ -1,11 +1,13 @@
 package org.example.mp3player.domain.repository
 
 import kotlinx.coroutines.flow.Flow
+import org.example.mp3player.core.audio.player.AudioTrack
 import org.example.mp3player.domain.model.UserAlbum
 
 interface UserAlbumsRepository {
     fun observeAll(): Flow<List<UserAlbum>>
     fun observeById(id: Long): Flow<UserAlbum?>
+    fun observeTracksOfAlbum(albumId: Long): Flow<List<AudioTrack>>
 
     suspend fun create(title: String, description: String, coverUri: String?): Long
     suspend fun rename(id: Long, newTitle: String)

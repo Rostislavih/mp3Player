@@ -1,17 +1,21 @@
 package org.example.mp3player.data.repository
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import org.example.mp3player.core.audio.player.AudioTrack
 import org.example.mp3player.data.database.dao.UserAlbumsDao
 import org.example.mp3player.data.database.entities.UserAlbumEntity
 import org.example.mp3player.data.database.entities.UserAlbumTrackCrossRef
 import org.example.mp3player.data.database.entities.UserAlbumWithTrackIds
 import org.example.mp3player.domain.model.UserAlbum
+import org.example.mp3player.domain.repository.TracksRepository
 import org.example.mp3player.domain.repository.UserAlbumsRepository
 
 class UserAlbumsRepositoryImpl(
     private val dao: UserAlbumsDao,
+    private val tracksRepository: TracksRepository,
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) : UserAlbumsRepository {
 
@@ -20,6 +24,20 @@ class UserAlbumsRepositoryImpl(
 
     override fun observeById(id: Long): Flow<UserAlbum?> =
         dao.observeById(id).map { it?.toDomain() }
+
+
+    override fun observeTracksOfAlbum(albumId: Long): Flow<List<AudioTrack>> =
+        combine(
+            dao.observeById(albumId),
+            tracksRepository.observeTracks(),
+        ) { album, allTracks ->
+            if (album == null) {
+                emptyList()
+            } else {
+                val tracksById = allTracks.associateBy { it.id }
+                album.orderedTrackIds.mapNotNull { trackId -> tracksById[trackId] }
+            }
+        }
 
     override suspend fun create(title: String, description: String, coverUri: String?): Long =
         dao.insertAlbum(

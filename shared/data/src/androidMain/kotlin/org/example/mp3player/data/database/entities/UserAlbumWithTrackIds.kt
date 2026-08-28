@@ -1,23 +1,20 @@
 package org.example.mp3player.data.database.entities
 
 import androidx.room.Embedded
-import androidx.room.Junction
 import androidx.room.Relation
 
 /**
- * Альбом со списком trackId через junction-таблицу.
- * Room сам сгенерирует JOIN по полям.
+ * Альбом со своими строками связей.
+ *
+ * Это обычная связь один-ко-многим: user_albums.id -> cross_ref.albumId.
+ * Junction здесь НЕ нужен: junction описывает "альбом -> трек" через промежуточную
+ * таблицу, а нам нужны сами строки промежуточной таблицы (в них лежит position).
  */
 data class UserAlbumWithTrackIds(
     @Embedded val album: UserAlbumEntity,
     @Relation(
         parentColumn = "id",
-        entityColumn = "trackId",
-        associateBy = Junction(
-            value = UserAlbumTrackCrossRef::class,
-            parentColumn = "albumId",
-            entityColumn = "trackId",
-        ),
+        entityColumn = "albumId",
     )
     val refs: List<UserAlbumTrackCrossRef>,
 ) {

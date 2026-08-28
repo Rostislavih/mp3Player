@@ -10,6 +10,7 @@ import org.example.mp3player.presentation.albumdetails.AlbumDetailsScreen
 import org.example.mp3player.presentation.albums.AlbumsScreen
 import org.example.mp3player.presentation.player.PlayerScreen
 import org.example.mp3player.presentation.tracks.TracksScreen
+import org.example.mp3player.presentation.useralbums.UserAlbumDetailsScreen
 import org.example.mp3player.presentation.useralbums.UserAlbumsScreen
 
 @Composable
@@ -39,11 +40,22 @@ fun AppNavHost(
         composable<UserAlbumsRoute> {
             UserAlbumsScreen(
                 onSnackbar = onSnackbar,
+                onAlbumClick = { albumId ->
+                    navController.navigate(UserAlbumDetailsRoute(albumId))
+                },
             )
         }
         composable<AlbumDetailsRoute> { backStackEntry ->
-            val args: AlbumDetailsRoute = backStackEntry.toRoute()
+            val args = backStackEntry.toRoute<AlbumDetailsRoute>()
             AlbumDetailsScreen(
+                albumId = args.albumId,
+                onBack = { navController.popBackStack() },
+                onOpenPlayer = { navController.navigate(PlayerRoute) },
+            )
+        }
+        composable<UserAlbumDetailsRoute> { backStackEntry ->
+            val args = backStackEntry.toRoute<UserAlbumDetailsRoute>()
+            UserAlbumDetailsScreen(
                 albumId = args.albumId,
                 onBack = { navController.popBackStack() },
                 onOpenPlayer = { navController.navigate(PlayerRoute) },

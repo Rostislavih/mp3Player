@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.example.mp3player.core.audio.player.AudioPlayer
+import org.example.mp3player.domain.model.UserAlbum
 import org.example.mp3player.domain.repository.TracksRepository
 import org.example.mp3player.domain.repository.UserAlbumsRepository
 import org.example.mp3player.presentation.resources.Res
@@ -57,6 +58,13 @@ class TracksViewModel(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = TracksUiState.Loading,
     )
+
+    val userAlbums: StateFlow<List<UserAlbum>> = userAlbumsRepository.observeAll()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList(),
+        )
 
     private val _effects = MutableSharedFlow<TracksEffect>()
     val effects: SharedFlow<TracksEffect> = _effects.asSharedFlow()

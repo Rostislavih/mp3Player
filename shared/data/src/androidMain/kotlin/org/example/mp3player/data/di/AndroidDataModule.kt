@@ -21,5 +21,5 @@ val androidDataModule = module {
     single { AudioPlayer(androidContext()) }
 
     // То же самое: у UserAlbumsRepositoryImpl параметр clock со значением по умолчанию.
-    single<UserAlbumsRepository> { UserAlbumsRepositoryImpl(get()) }
+    single<UserAlbumsRepository> { UserAlbumsRepositoryImpl(get(), get()) }
 }

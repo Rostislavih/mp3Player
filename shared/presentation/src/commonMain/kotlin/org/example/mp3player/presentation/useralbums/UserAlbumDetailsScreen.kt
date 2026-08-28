@@ -1,4 +1,4 @@
-package org.example.mp3player.presentation.albumdetails
+package org.example.mp3player.presentation.useralbums
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -15,38 +15,38 @@ import org.koin.compose.viewmodel.koinViewModel
 import org.koin.core.parameter.parametersOf
 
 @Composable
-fun AlbumDetailsScreen(
-    albumId: String,
+fun UserAlbumDetailsScreen(
+    albumId: Long,
     onBack: () -> Unit,
     onOpenPlayer: () -> Unit,
     modifier: Modifier = Modifier,
-    viewModel: AlbumDetailsViewModel = koinViewModel { parametersOf(albumId) }
+    viewModel: UserAlbumDetailsViewModel = koinViewModel { parametersOf(albumId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         viewModel.effects.collect { effect ->
             when (effect) {
-                AlbumDetailsEffect.OpenPlayer -> onOpenPlayer()
+                UserAlbumDetailsEffect.OpenPlayer -> onOpenPlayer()
             }
         }
     }
 
     when (val current = state) {
-        AlbumDetailsUiState.Loading -> LoadingBox(modifier)
+        UserAlbumDetailsUiState.Loading -> LoadingBox(modifier)
 
-        is AlbumDetailsUiState.Content -> AlbumDetailsContent(
-            title = current.album.title,
-            subtitle = current.album.artist,
-            coverUri = current.album.coverUri,
+        is UserAlbumDetailsUiState.Content -> AlbumDetailsContent(
+            title = current.title,
+            subtitle = current.description,
+            coverUri = current.coverUri,
             tracks = current.tracks,
             onBack = onBack,
-            onPlayAll = { viewModel.onEvent(AlbumDetailsEvent.PlayAll) },
-            onTrackClick = { index -> viewModel.onEvent(AlbumDetailsEvent.PlayTrack(index)) },
+            onPlayAll = { viewModel.onEvent(UserAlbumDetailsEvent.PlayAll) },
+            onTrackClick = { index -> viewModel.onEvent(UserAlbumDetailsEvent.PlayTrack(index)) },
             modifier = modifier,
         )
 
-        is AlbumDetailsUiState.Error -> ErrorBanner(
+        is UserAlbumDetailsUiState.Error -> ErrorBanner(
             message = current.errorText,
             onRetry = onBack,
             retryText = stringResource(Res.string.action_back),
